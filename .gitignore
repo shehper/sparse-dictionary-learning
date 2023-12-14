@@ -8,3 +8,5 @@ __pycache__/
 *.pt
 *.pyc
 input.txt
+train_gpt.sh
+slurm
