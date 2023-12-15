@@ -8,7 +8,12 @@ __pycache__/
 *.pt
 *.pyc
 input.txt
+<<<<<<< HEAD
 notes.md
 autoencoder.ipynb
 blog.md
 env/
+=======
+train_gpt.sh
+slurm
+>>>>>>> 7c10e89e08378590a590bc322fce2bbcd20bb732
