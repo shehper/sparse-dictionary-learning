@@ -192,6 +192,7 @@ class GPT(nn.Module):
 
         return logits, loss
     
+    @torch.no_grad()
     def get_gelu_acts(self, idx):
         # returns GeLU activations of MLP of the last decoder block. 
         device = idx.device
@@ -211,7 +212,8 @@ class GPT(nn.Module):
 
         return x
     
-    def reconstructed_loss(self, sae, idx, targets=None):
+    @torch.no_grad()
+    def reconstructed_loss(self, sae, idx, targets):
         # recons_acts are reconstructed activations of MLP of the ith layer
         # idx is the tensor of tokenized text
 
@@ -224,16 +226,10 @@ class GPT(nn.Module):
 
         x = self.transformer.ln_f(x)
 
-        if targets is not None:
-            # if we are given some desired targets also calculate the loss
-            logits = self.lm_head(x)
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
-        else:
-            # inference-time mini-optimization: only forward the lm_head on the very last position
-            logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
-            loss = None
+        logits = self.lm_head(x)
+        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
 
-        return logits, loss
+        return loss
 
 
     def crop_block_size(self, block_size):
