@@ -6,6 +6,8 @@ Train a Sparse AutoEncoder on MLP activations
 # NEXT: while training the autoencoder, move a batch of activations back to the gpu
 # And so son
 
+# TODO: Check that the default initialization is the one mentioned in the paper. 
+
 import os
 from contextlib import nullcontext
 import torch
