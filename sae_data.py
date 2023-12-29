@@ -15,7 +15,7 @@ total_contexts = int(4e6)
 contexts_per_batch = int(1e5) 
 tokens_per_context = 200 
 convert_to_f16 = True # save activations in Half dtype instead of Float
-dataset = 'owt'
+dataset = 'openwebtext'
 model_dir = 'out' # ignored if init_from is not 'resume'
 n_files = 20 # number of files in which data will be saved 
 
