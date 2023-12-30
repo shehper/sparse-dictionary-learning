@@ -91,5 +91,7 @@ for batch in range(num_batches):
 os.makedirs('sae_data', exist_ok=True)
 examples_per_file = total_contexts * tokens_per_context // n_files
 for i in range(n_files):
+    # notice .clone(); else torch.save would need the storage required for the whole tensor sae_data 
+    # https://github.com/pytorch/pytorch/issues/1995
     torch.save(sae_data[i * examples_per_file: (i+1) * examples_per_file].clone(), f'sae_data/sae_data_{i}.pt')
     print(f'saved sae_data_{i}.pt in sae_data')
