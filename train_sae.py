@@ -58,7 +58,7 @@ class AutoEncoder(nn.Module):
         f = self.relu(self.enc(x)) # (b, m)
         x = self.dec(f) # (b, n)
         mseloss = F.mse_loss(x, acts) # scalar
-        l1loss = F.l1_loss(f, torch.zeros(f.shape), reduction='sum') # scalar
+        l1loss = F.l1_loss(f, torch.zeros(f.shape, device=f.device), reduction='sum') # scalar
         loss = mseloss + self.lam * l1loss # scalar
         out = {'mse_loss': mseloss, 'l1loss': l1loss, 
                 'loss': loss, 'recons_acts': x, 'f': f}
