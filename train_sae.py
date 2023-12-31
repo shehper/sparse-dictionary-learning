@@ -2,7 +2,7 @@
 Train a Sparse AutoEncoder model
 
 Run on a macbook on a Shakespeare dataset as 
-python train_sae.py --dataset=shakespeare_char --model_dir=out-shakespeare-char --eval_contexts=1000 --batch_size=128
+python train_sae.py --dataset=shakespeare_char --model_dir=out-shakespeare-char --eval_contexts=1000 --batch_size=128 --device=cpu
 """
 import os
 import torch
@@ -18,8 +18,7 @@ import io
 import psutil
 
 ## hyperparameters
-device = 'cpu'
-device_type = 'cuda' if 'cuda' in device else 'cpu'
+device = 'cuda'
 seed = 1442
 dataset = 'openwebtext'
 model_dir = 'out' 
@@ -38,31 +37,10 @@ exec(open('configurator.py').read()) # overrides from command line or config fil
 config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
 
-
-## load tokenized text data
-data_dir = os.path.join('data', dataset)
-text_data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
-
-
-## load GPT model
-ckpt_path = os.path.join(model_dir, 'ckpt.pt')
-checkpoint = torch.load(ckpt_path, map_location=device)
-gptconf = GPTConfig(**checkpoint['model_args'])
-model = GPT(gptconf)
-state_dict = checkpoint['model']
-compile = False # TODO: Don't know why I needed to set compile to False before loading the model..
-# TODO: I dont know why the next 4 lines are needed. state_dict does not seem to have any keys with unwanted_prefix.
-unwanted_prefix = '_orig_mod.' 
-for k,v in list(state_dict.items()):
-    if k.startswith(unwanted_prefix):
-        state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
-model.load_state_dict(state_dict)
-model.eval()
-model.to(device)
-if compile:
-    model = torch.compile(model) # requires PyTorch 2.0 (optional)
-block_size = model.config.block_size
-
+# variables that depend on input parameters
+device_type = 'cuda' if 'cuda' in device else 'cpu'
+eval_tokens = eval_contexts * eval_context_tokens
+config['device_type'], config['eval_tokens'] = device_type, eval_tokens
 
 ## Define Autoencoder class, 
 class AutoEncoder(nn.Module):
@@ -161,16 +139,43 @@ if __name__ == '__main__':
     torch.backends.cuda.matmul.allow_tf32 = True # allow tf32 on matmul
     torch.backends.cudnn.allow_tf32 = True # allow tf32 on cudnn
 
-    ## recall that mlp activations data was saved in sae_data in multiple partitions 
+
+    ## load tokenized text data
+    data_dir = os.path.join('data', dataset)
+    text_data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
+
+
+    ## load GPT model
+    ckpt_path = os.path.join(model_dir, 'ckpt.pt')
+    checkpoint = torch.load(ckpt_path, map_location=device)
+    gptconf = GPTConfig(**checkpoint['model_args'])
+    model = GPT(gptconf)
+    state_dict = checkpoint['model']
+    compile = False # TODO: Don't know why I needed to set compile to False before loading the model..
+    # TODO: I dont know why the next 4 lines are needed. state_dict does not seem to have any keys with unwanted_prefix.
+    unwanted_prefix = '_orig_mod.' 
+    for k,v in list(state_dict.items()):
+        if k.startswith(unwanted_prefix):
+            state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
+    model.load_state_dict(state_dict)
+    model.eval()
+    model.to(device)
+    if compile:
+        model = torch.compile(model) # requires PyTorch 2.0 (optional)
+    block_size = model.config.block_size
+
+
+    ## recall that mlp activations data was saved in the folder 'sae_data' in multiple files 
     n_parts = len(next(os.walk('sae_data'))[2]) # number of partitions of (or files in) sae_data
     
     # start here by loading the first partition
     n_part = 0 # partition number
+    loading_start_time = time.time() # TODO: Can remove this later once I get a sense of the amount of time it takes
     curr_part = torch.load(f'sae_data/sae_data_{n_part}.pt') # current partition
     ex_per_part, n_ffwd = curr_part.shape # number of examples per partition, gpt d_mlp
     N = n_parts * ex_per_part # total number of training examples for autoencoder
     offset = 0 # when partition number > 0, first 'offset' # of examples will be trained with exs from previous partition
-    print(f'successfully loaded the first partition of data from sae_data/sae_data_{n_part}.pt')
+    print(f'successfully loaded the first partition of data from sae_data/sae_data_{n_part}.pt in {(time.time()-loading_start_time):.2f} seconds')
     memory = psutil.virtual_memory()
     print(f'Available memory after loading data: {memory.available / (1024**3):.2f} GB; memory usage: {memory.percent}%')
 
@@ -188,8 +193,10 @@ if __name__ == '__main__':
     optimizer = torch.optim.Adam(sae.parameters(), lr=learning_rate) 
 
     ## TRAINING LOOP
+    run_name = f'sae_{dataset}_{time.time():.0f}'
     if wandb_log:
-        wandb.init(project=f'sae-{dataset}', name=f'sae_{dataset}_{time.time():.0f}', config=config)
+        wandb.init(project=f'sae-{dataset}', name=run_name, config=config)
+    start_time = time.time()
 
     for step in range(N // batch_size):
         
@@ -200,9 +207,10 @@ if __name__ == '__main__':
         # if reach the end of current partition, load the next partition into CPU memory
         if batch_end >= ex_per_part and n_part < n_parts - 1:
             n_part += 1
+            loading_start_time = time.time() # TODO: Can remove this later once I get a sense of the amount of time it takes
             del curr_part # free up memory
             curr_part = torch.load(f'sae_data/sae_data_{n_part}.pt')
-            print(f"successfully loaded sae_data_{n_part}.pt")
+            print(f"successfully loaded sae_data_{n_part}.pt in {(time.time()-loading_start_time):.2f} seconds")
             batch = torch.cat([batch, curr_part[:batch_size - len(batch)]]).to(torch.float32)
             offset = ex_per_part - batch_end
         assert len(batch) == batch_size, f"length of batch = {len(batch)} at step = {step} and partition number = {n_part} is not correct"
@@ -228,15 +236,19 @@ if __name__ == '__main__':
         if step % 100 == 0:
             # TODO: replace this with an estimate_nll function that estimates nll loss and score as done by 
             # can I perform computations and logging asynchronously? 
-            
+        
+            start_logging_time = time.time() 
+
             xs, ys = get_text_batch(data=text_data, block_size=block_size, batch_size=gpt_batch_size)
             nll_loss = model.reconstructed_loss(sae, xs, ys)
             n_feature_acts = get_n_feature_acts() # number of tokens on which each feature is active; shape: (n_features,)
-            log_feature_density = np.log10(n_feature_acts[n_feature_acts != 0]/(eval_contexts * eval_context_tokens)) # (n_features,)
+            log_feature_density = np.log10(n_feature_acts[n_feature_acts != 0]/(eval_tokens)) # (n_features,)
             feat_density = get_hist_image(log_feature_density)
 
+
             print(f"batch: {step}/{N // batch_size}, mse loss: {out['mse_loss'].item():.2f}, l1_loss: {out['l1loss'].item():.2f}, \
-                    total_loss = {loss.item():.2f}, nll loss: {nll_loss:.4f}")
+                    total_loss = {loss.item():.2f}, nll loss: {nll_loss:.4f}, time per step: {(time.time()-start_time)/(step+1):.2f}, \
+                  logging time = {(time.time()-start_logging_time):.2f}")
             
             if wandb_log:
                 wandb.log({'losses/mse_loss': out['mse_loss'].item(),
