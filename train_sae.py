@@ -15,6 +15,7 @@ import time
 import matplotlib.pyplot as plt
 from PIL import Image
 import io
+import psutil
 
 ## hyperparameters
 device = 'cpu'
@@ -169,6 +170,9 @@ if __name__ == '__main__':
     ex_per_part, n_ffwd = curr_part.shape # number of examples per partition, gpt d_mlp
     N = n_parts * ex_per_part # total number of training examples for autoencoder
     offset = 0 # when partition number > 0, first 'offset' # of examples will be trained with exs from previous partition
+    print(f'successfully loaded the first partition of data from sae_data/sae_data_{n_part}.pt')
+    memory = psutil.virtual_memory()
+    print(f'Available memory after loading data: {memory.available / (1024**3):.2f} GB; memory usage: {memory.percent}%')
 
     ## Get text data for evaluation 
     X, Y = get_text_batch(text_data, block_size=block_size, batch_size=eval_contexts) # (eval_contexts, block_size) 
@@ -176,6 +180,8 @@ if __name__ == '__main__':
     selected_tokens_loc = [torch.randint(block_size, (eval_context_tokens,)) for _ in range(eval_contexts)]
     # Note: for eval_contexts=1 million it will take 15.6GB of CPU MEMORY --- 7.81GB each for x and y
     # perhaps we will have to go one order of magnitude lower; use 0.1million contexts
+    memory = psutil.virtual_memory()
+    print(f'collected text data for evaluation; available memory: {memory.available / (1024**3):.2f} GB; memory usage: {memory.percent}%')
 
     ## initiate the autoencoder and optimizer
     sae = AutoEncoder(n_ffwd, n_features, lam=l1_coeff).to(device)
@@ -196,7 +202,7 @@ if __name__ == '__main__':
             n_part += 1
             del curr_part # free up memory
             curr_part = torch.load(f'sae_data/sae_data_{n_part}.pt')
-            print(f"loaded sae_data_{n_part}.pt")
+            print(f"successfully loaded sae_data_{n_part}.pt")
             batch = torch.cat([batch, curr_part[:batch_size - len(batch)]]).to(torch.float32)
             offset = ex_per_part - batch_end
         assert len(batch) == batch_size, f"length of batch = {len(batch)} at step = {step} and partition number = {n_part} is not correct"
