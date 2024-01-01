@@ -2,7 +2,7 @@
 Train a Sparse AutoEncoder model
 
 Run on a macbook on a Shakespeare dataset as 
-python train_sae.py --dataset=shakespeare_char --model_dir=out-shakespeare-char --eval_contexts=1000 --batch_size=128 --device=cpu
+python train_sae.py --dataset=shakespeare_char --model_dir=out-shakespeare-char --eval_contexts=1000 --batch_size=128 --device=cpu --eval_interval=100
 """
 import os
 import torch
@@ -30,6 +30,7 @@ batch_size = 8192 # 8192 for owt
 n_features = 4096
 eval_contexts = 10000 # 10 million in anthropic paper; but we can choose 1 million as OWT dataset is smaller
 eval_context_tokens = 10 # same as anthropic paper
+eval_interval = 500
 
 # -----------------------------------------------------------------------------
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
@@ -56,20 +57,19 @@ class AutoEncoder(nn.Module):
         # acts is of shape (b, n) where b = batch_size, n = d_MLP
         x = acts - self.dec.bias # (b, n)
         f = self.relu(self.enc(x)) # (b, m)
-        x = self.dec(f) # (b, n)
-        mseloss = F.mse_loss(x, acts) # scalar
+        reconst_acts = self.dec(f) # (b, n)
+        mseloss = F.mse_loss(reconst_acts, acts) # scalar
         l1loss = F.l1_loss(f, torch.zeros(f.shape, device=f.device), reduction='sum') # scalar
         loss = mseloss + self.lam * l1loss # scalar
-        out = {'mse_loss': mseloss, 'l1loss': l1loss, 
-                'loss': loss, 'recons_acts': x, 'f': f}
-        return loss, out
-    
-    @torch.no_grad()
-    def get_feature_acts(self, acts):
-        # given acts of shape (b, n), compute feature activations
-        x = acts - self.dec.bias # (b, n)
-        f = self.relu(self.enc(x)) # (b, m)
-        return f
+        return loss, f, reconst_acts, mseloss, l1loss
+
+    # TODO: remove this method?    
+    # @torch.no_grad()
+    # def get_feature_acts(self, acts):
+    #     # given acts of shape (b, n), compute feature activations
+    #     x = acts - self.dec.bias # (b, n)
+    #     f = self.relu(self.enc(x)) # (b, m)
+    #     return f
 
 
 # a function to remove components of gradients parallel to weights, needed during training
@@ -111,25 +111,29 @@ def get_hist_image(data, bins='auto'):
 
 
 ## a helper function that computes the number of tokens on which each feature is activated
-def get_n_feature_acts():
-    n_feature_activations = torch.zeros(n_features, dtype=torch.float32) # number of tokens on which a feature is active 
-
-    for iter in range(eval_contexts // gpt_batch_size):
-        
-        if device_type == 'cuda':
-            # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
-            x = X[iter * gpt_batch_size: (iter + 1) * gpt_batch_size].pin_memory().to(device, non_blocking=True)
-            y = Y[iter * gpt_batch_size: (iter + 1) * gpt_batch_size].pin_memory().to(device, non_blocking=True)
-        else:
-            x = X[iter * gpt_batch_size: (iter + 1) * gpt_batch_size].to(device)
-            y = Y[iter * gpt_batch_size: (iter + 1) * gpt_batch_size].to(device)
-        
-        mlp_activations = model.get_gelu_acts(x) # (gpt_b, t, n_ffwd)
-        feature_activations = sae.get_feature_acts(mlp_activations) # (b, t, n_features)
-        selected_feature_acts = torch.stack([feature_activations[i, selected_tokens_loc[iter], :] for i in range(gpt_batch_size)])  # (b, tokens_per_eval_context, n_features)
-        n_feature_activations += torch.count_nonzero(selected_feature_acts, dim=[0, 1]).to('cpu') # (n_features, )
+# TODO: maybe this function needs to be removed
+# def get_n_feature_acts():
     
-    return n_feature_activations
+#     # number of tokens on which a feature is active 
+#     n_feature_activations = torch.zeros(n_features, dtype=torch.float32) # initiate with zeros
+
+#     for iter in range(eval_contexts // gpt_batch_size):
+        
+#         if device_type == 'cuda':
+#             # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
+#             x = X[iter * gpt_batch_size: (iter + 1) * gpt_batch_size].pin_memory().to(device, non_blocking=True)
+#             y = Y[iter * gpt_batch_size: (iter + 1) * gpt_batch_size].pin_memory().to(device, non_blocking=True)
+#         else:
+#             x = X[iter * gpt_batch_size: (iter + 1) * gpt_batch_size].to(device)
+#             y = Y[iter * gpt_batch_size: (iter + 1) * gpt_batch_size].to(device)
+        
+#         mlp_activations = model.get_gelu_acts(x) # (gpt_b, t, n_ffwd)
+#         feature_activations = sae.get_feature_acts(mlp_activations) # (b, t, n_features)
+#         selected_feature_acts = torch.stack([feature_activations[i, selected_tokens_loc[iter], :] for i in range(gpt_batch_size)])  # (b, tokens_per_eval_context, n_features)
+#         n_feature_activations += torch.count_nonzero(selected_feature_acts, dim=[0, 1]).to('cpu') # (n_features, )
+    
+#     return n_feature_activations
+
 
 
 if __name__ == '__main__':
@@ -176,6 +180,8 @@ if __name__ == '__main__':
     N = n_parts * ex_per_part # total number of training examples for autoencoder
     offset = 0 # when partition number > 0, first 'offset' # of examples will be trained with exs from previous partition
     print(f'successfully loaded the first partition of data from sae_data/sae_data_{n_part}.pt in {(time.time()-loading_start_time):.2f} seconds')
+    print(f'Approximate number of training examples: {N}')
+
     memory = psutil.virtual_memory()
     print(f'Available memory after loading data: {memory.available / (1024**3):.2f} GB; memory usage: {memory.percent}%')
 
@@ -188,19 +194,48 @@ if __name__ == '__main__':
     memory = psutil.virtual_memory()
     print(f'collected text data for evaluation; available memory: {memory.available / (1024**3):.2f} GB; memory usage: {memory.percent}%')
 
+
+    ## Compute and store MLP activations, full transformer loss and ablated MLP loss on evaluation text data
+    mlp_acts_storage = torch.tensor([], dtype=torch.float16, device=device)
+    res_stream_storage = torch.tensor([], dtype=torch.float16, device=device)
+    full_loss, mlp_ablated_loss = 0, 0
+    for iter in range(eval_contexts // gpt_batch_size):    
+        if device_type == 'cuda':
+            # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
+            x = X[iter * gpt_batch_size: (iter + 1) * gpt_batch_size].pin_memory().to(device, non_blocking=True)
+            y = Y[iter * gpt_batch_size: (iter + 1) * gpt_batch_size].pin_memory().to(device, non_blocking=True)
+        else:
+            x = X[iter * gpt_batch_size: (iter + 1) * gpt_batch_size].to(device)
+            y = Y[iter * gpt_batch_size: (iter + 1) * gpt_batch_size].to(device)
+        res_stream, mlp_activations, batch_loss, batch_ablated_loss = model.forward_with_and_without_mlp(x, y)    
+        mlp_acts_storage = torch.cat([mlp_acts_storage, mlp_activations.to(dtype=torch.float16)])
+        res_stream_storage = torch.cat([res_stream_storage, res_stream.to(dtype=torch.float16)])
+        full_loss += batch_loss
+        mlp_ablated_loss += batch_ablated_loss
+    full_loss /= (eval_contexts // gpt_batch_size)
+    mlp_ablated_loss /= (eval_contexts // gpt_batch_size)
+    memory = psutil.virtual_memory()
+    print(f'computed mlp activations and losses on eval data; available memory: {memory.available / (1024**3):.2f} GB; memory usage: {memory.percent}%')
+    print(f'The full transformer loss and MLP ablated loss on the evaluation data are {full_loss:.2f}, {mlp_ablated_loss:.2f}')
+    # TODO: Do I really need X and Y anymore or can I delete them from the memory?
+
+
     ## initiate the autoencoder and optimizer
     sae = AutoEncoder(n_ffwd, n_features, lam=l1_coeff).to(device)
     optimizer = torch.optim.Adam(sae.parameters(), lr=learning_rate) 
 
-    ## TRAINING LOOP
+    
+    ## WANDB LOG
     run_name = f'sae_{dataset}_{time.time():.0f}'
     if wandb_log:
         wandb.init(project=f'sae-{dataset}', name=run_name, config=config)
-    start_time = time.time()
 
-    for step in range(N // batch_size):
-        
-        ### ------ pick a batch of examples ------ #####
+
+    ## TRAINING LOOP
+    start_time = time.time()
+    
+    for step in range(N // batch_size):    
+        ### ------ pick a batch of training examples ------ #####
         batch_start = step * batch_size - n_part * ex_per_part - offset
         batch_end = (step + 1) * batch_size - n_part * ex_per_part - offset
         batch = curr_part[batch_start: batch_end].to(torch.float32)
@@ -223,43 +258,77 @@ if __name__ == '__main__':
         # and any operations on CPU will be performed asynchronously with data transfrer
         # https://stackoverflow.com/questions/55563376/pytorch-how-does-pin-memory-work-in-dataloader
 
+        
         ## -------- forward pass, backward pass, remove gradient information parallel to decoder columns, optimizer step, ----- ##
         ## --------  normalize dictionary vectors ------- ##
         optimizer.zero_grad(set_to_none=True) 
-        loss, out = sae(batch) 
+        loss = sae(batch)[0]
         loss.backward()
         sae.dec.weight.grad = remove_parallel_component(sae.dec.weight.grad, sae.dec.weight)
         optimizer.step()
         sae.dec.weight = nn.Parameter(F.normalize(sae.dec.weight, dim=0))
+        del batch
 
+        
         ## log info
-        if step % 100 == 0:
+        if step % eval_interval == 0:
             # TODO: replace this with an estimate_nll function that estimates nll loss and score as done by 
             # can I perform computations and logging asynchronously? 
         
-            start_logging_time = time.time() 
+            start_logging_time = time.time()
+            reconst_nll, sae_loss, sae_mse_loss, sae_l1loss, l0_norm = 0, 0, 0, 0, 0 
+            n_feature_acts = torch.zeros(n_features, dtype=torch.float32) # initiate with zeros
+            for iter in range(eval_contexts // gpt_batch_size):   
+                if device_type == 'cuda':
+                    batch_mlp_activations = mlp_acts_storage[iter * gpt_batch_size: (iter + 1) * gpt_batch_size].pin_memory().to(device, non_blocking=True)
+                    batch_res_stream = res_stream_storage[iter * gpt_batch_size: (iter + 1) * gpt_batch_size].pin_memory().to(device, non_blocking=True)
+                    y = Y[iter * gpt_batch_size: (iter + 1) * gpt_batch_size].pin_memory().to(device, non_blocking=True)
+                else:
+                    batch_mlp_activations = mlp_acts_storage[iter * gpt_batch_size: (iter + 1) * gpt_batch_size].to(device)
+                    batch_res_stream = res_stream_storage[iter * gpt_batch_size: (iter + 1) * gpt_batch_size].to(device)
+                    y = Y[iter * gpt_batch_size: (iter + 1) * gpt_batch_size].to(device)
 
-            xs, ys = get_text_batch(data=text_data, block_size=block_size, batch_size=gpt_batch_size)
-            nll_loss = model.reconstructed_loss(sae, xs, ys)
-            n_feature_acts = get_n_feature_acts() # number of tokens on which each feature is active; shape: (n_features,)
+                with torch.no_grad():
+                    batch_loss, batch_f, batch_reconst_acts, batch_mseloss, batch_l1loss = sae(batch_mlp_activations)
+
+                # Compute reconstructed loss from batch_reconst_acts
+                batch_reconst_nll = model.loss_from_mlp_acts(batch_res_stream, batch_reconst_acts, y)
+                reconst_nll += batch_reconst_nll
+                sae_loss += batch_loss 
+                sae_mse_loss += batch_mseloss
+                sae_l1loss += batch_l1loss
+                l0_norm += torch.sum(torch.count_nonzero(batch_f, dim=-1)).item()
+
+                selected_feature_acts = torch.stack([batch_f[i, selected_tokens_loc[iter], :] for i in range(gpt_batch_size)])  # (b, tokens_per_eval_context, n_features)
+                n_feature_acts += torch.count_nonzero(selected_feature_acts, dim=[0, 1]).to('cpu') # (n_features, )
+
+            reconst_nll /= (eval_contexts // gpt_batch_size)
+            sae_l1loss /= (eval_contexts // gpt_batch_size)
+            sae_loss /= (eval_contexts // gpt_batch_size)
+            sae_mse_loss /= (eval_contexts // gpt_batch_size)
+            l0_norm /= (eval_contexts // gpt_batch_size)
+
+            nll_score = (full_loss - reconst_nll)/(full_loss - mlp_ablated_loss)
+            
             log_feature_density = np.log10(n_feature_acts[n_feature_acts != 0]/(eval_tokens)) # (n_features,)
             feat_density = get_hist_image(log_feature_density)
+            
+            del batch_f, n_feature_acts, selected_feature_acts, batch_reconst_acts, batch_res_stream
 
-
-            print(f"batch: {step}/{N // batch_size}, mse loss: {out['mse_loss'].item():.2f}, l1_loss: {out['l1loss'].item():.2f}, \
-                    total_loss = {loss.item():.2f}, nll loss: {nll_loss:.4f}, time per step: {(time.time()-start_time)/(step+1):.2f}, \
-                  logging time = {(time.time()-start_logging_time):.2f}")
+            print(f"batch: {step}/{N // batch_size}, mse loss: {sae_mse_loss.item():.2f}, l1_loss: {sae_l1loss.item():.2f}, \
+                    total_loss = {sae_loss.item():.2f}, nll loss: {reconst_nll:.4f}, time per step: {(time.time()-start_time)/(step+1):.2f}, logging time = {(time.time()-start_logging_time):.2f}")
             
             if wandb_log:
-                wandb.log({'losses/mse_loss': out['mse_loss'].item(),
-                        'losses/l1_loss': out['l1loss'].item(),
+                wandb.log({'losses/mse_loss': sae_mse_loss.item(),
+                        'losses/l1_loss': sae_l1loss.item(),
                         'losses/total_loss': loss.item(),
-                        'losses/nll_loss': nll_loss,
-                        'debug/l0_norm': torch.mean(torch.count_nonzero(out['f'], dim=-1), dtype=torch.float32),
+                        'losses/nll_loss': reconst_nll,
+                        'losses/nll_score': nll_score,
+                        'debug/l0_norm': l0_norm,
                         'debug/mean_dictionary_vector_length': torch.mean(torch.linalg.vector_norm(sae.dec.weight, dim=0)),
-                        "debug/feature_density_histograms": wandb.Image(feat_density),
-                        "debug/min_log_feat_density": log_feature_density.min().item(),
-                        "debug/num_alive_neurons": len(log_feature_density),
+                        "feature_density/feature_density_histograms": wandb.Image(feat_density),
+                        "feature_density/min_log_feat_density": log_feature_density.min().item(),
+                        "feature_density/num_alive_neurons": len(log_feature_density),
                         })
 
     print(f'Exited loop after training on {N // batch_size * batch_size} examples')
