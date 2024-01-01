@@ -290,17 +290,24 @@ if __name__ == '__main__':
                 with torch.no_grad():
                     batch_loss, batch_f, batch_reconst_acts, batch_mseloss, batch_l1loss = sae(batch_mlp_activations)
 
+                del batch_mlp_activations
+
+                # evaluate number of feature activations (number of tokens on which each feature activates)
+                batch_f = batch_f.to('cpu')
+                selected_feature_acts = torch.stack([batch_f[i, selected_tokens_loc[iter], :] for i in range(gpt_batch_size)])  # (b, tokens_per_eval_context, n_features)
+                n_feature_acts += torch.count_nonzero(selected_feature_acts, dim=[0, 1]) # (n_features, )
+                l0_norm += torch.sum(torch.count_nonzero(batch_f, dim=-1)).item()
+                del batch_f, selected_feature_acts
+
                 # Compute reconstructed loss from batch_reconst_acts
                 batch_reconst_nll = model.loss_from_mlp_acts(batch_res_stream, batch_reconst_acts, y)
                 reconst_nll += batch_reconst_nll
                 sae_loss += batch_loss 
                 sae_mse_loss += batch_mseloss
                 sae_l1loss += batch_l1loss
-                l0_norm += torch.sum(torch.count_nonzero(batch_f, dim=-1)).item()
+                
 
-                selected_feature_acts = torch.stack([batch_f[i, selected_tokens_loc[iter], :] for i in range(gpt_batch_size)])  # (b, tokens_per_eval_context, n_features)
-                n_feature_acts += torch.count_nonzero(selected_feature_acts, dim=[0, 1]).to('cpu') # (n_features, )
-
+                
             reconst_nll /= (eval_contexts // gpt_batch_size)
             sae_l1loss /= (eval_contexts // gpt_batch_size)
             sae_loss /= (eval_contexts // gpt_batch_size)
@@ -315,7 +322,7 @@ if __name__ == '__main__':
             min_log_feature_density = log_feature_density.min().item()
             num_alive_neurons = len(log_feature_density)
             
-            del batch_f, n_feature_acts, selected_feature_acts, batch_reconst_acts, batch_res_stream, batch_mlp_activations, y
+            del n_feature_acts, batch_reconst_acts, batch_res_stream, y
             del log_feature_density
 
             print(f"batch: {step}/{N // batch_size}, time per step: {(time.time()-start_time)/(step+1):.2f}, logging time = {(time.time()-start_logging_time):.2f}")
