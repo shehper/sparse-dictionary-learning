@@ -339,6 +339,13 @@ if __name__ == '__main__':
                         "feature_density/min_log_feat_density": min_log_feature_density,
                         "feature_density/num_alive_neurons": num_alive_neurons,
                         })
+                
+            if device_type == 'cuda':
+                print('before emptying cache:')
+                print(torch.cuda.memory_summary(device=None, abbreviated=False))
+                torch.cuda.empty_cache()
+                print('after emptying cache:')
+                print(torch.cuda.memory_summary(device=None, abbreviated=False))
 
     print(f'Exited loop after training on {N // batch_size * batch_size} examples')
 
