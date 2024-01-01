@@ -200,6 +200,7 @@ if __name__ == '__main__':
     res_stream_storage = torch.tensor([], dtype=torch.float16)
     full_loss, mlp_ablated_loss = 0, 0
     for iter in range(eval_contexts // gpt_batch_size):    
+        print(f'iter = {iter}/{eval_contexts // gpt_batch_size} in computation of mlp_acts and res_stream for eval data')
         if device_type == 'cuda':
             # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
             x = X[iter * gpt_batch_size: (iter + 1) * gpt_batch_size].pin_memory().to(device, non_blocking=True)
@@ -235,12 +236,14 @@ if __name__ == '__main__':
     start_time = time.time()
     
     for step in range(N // batch_size):    
+        
         ### ------ pick a batch of training examples ------ #####
         batch_start = step * batch_size - n_part * ex_per_part - offset
         batch_end = (step + 1) * batch_size - n_part * ex_per_part - offset
         batch = curr_part[batch_start: batch_end].to(torch.float32)
+        
         # if reach the end of current partition, load the next partition into CPU memory
-        if batch_end >= ex_per_part and n_part < n_parts - 1:
+        if batch_end >= ex_per_part and n_part < n_parts - 1: 
             n_part += 1
             loading_start_time = time.time() # TODO: Can remove this later once I get a sense of the amount of time it takes
             del curr_part # free up memory
@@ -248,16 +251,13 @@ if __name__ == '__main__':
             print(f"successfully loaded sae_data_{n_part}.pt in {(time.time()-loading_start_time):.2f} seconds")
             batch = torch.cat([batch, curr_part[:batch_size - len(batch)]]).to(torch.float32)
             offset = ex_per_part - batch_end
+        
         assert len(batch) == batch_size, f"length of batch = {len(batch)} at step = {step} and partition number = {n_part} is not correct"
+        
         if device_type == 'cuda':
             batch = batch.pin_memory().to(device, non_blocking=True)
         else:
             batch = batch.to(device)
-        # pin_memory() can speed up data transfer from CPU RAM to GPU RAM 
-        # non_blocking=True will transfer the data asynchronously, i.e. operations on GPU that don't depend on the transferred data
-        # and any operations on CPU will be performed asynchronously with data transfrer
-        # https://stackoverflow.com/questions/55563376/pytorch-how-does-pin-memory-work-in-dataloader
-
         
         ## -------- forward pass, backward pass, remove gradient information parallel to decoder columns, optimizer step, ----- ##
         ## --------  normalize dictionary vectors ------- ##
@@ -272,8 +272,7 @@ if __name__ == '__main__':
         
         ## log info
         if step % eval_interval == 0:
-            # TODO: replace this with an estimate_nll function that estimates nll loss and score as done by 
-            # can I perform computations and logging asynchronously? 
+            # TODO: can evaluation and logging be done asynchronously? 
         
             start_logging_time = time.time()
             reconst_nll, sae_loss, sae_mse_loss, sae_l1loss, l0_norm = 0, 0, 0, 0, 0 
@@ -312,11 +311,14 @@ if __name__ == '__main__':
             
             log_feature_density = np.log10(n_feature_acts[n_feature_acts != 0]/(eval_tokens)) # (n_features,)
             feat_density = get_hist_image(log_feature_density)
-            
-            del batch_f, n_feature_acts, selected_feature_acts, batch_reconst_acts, batch_res_stream
 
-            print(f"batch: {step}/{N // batch_size}, mse loss: {sae_mse_loss.item():.2f}, l1_loss: {sae_l1loss.item():.2f}, \
-                    total_loss = {sae_loss.item():.2f}, nll loss: {reconst_nll:.4f}, time per step: {(time.time()-start_time)/(step+1):.2f}, logging time = {(time.time()-start_logging_time):.2f}")
+            min_log_feature_density = log_feature_density.min().item()
+            num_alive_neurons = len(log_feature_density)
+            
+            del batch_f, n_feature_acts, selected_feature_acts, batch_reconst_acts, batch_res_stream, batch_mlp_activations, y
+            del log_feature_density
+
+            print(f"batch: {step}/{N // batch_size}, time per step: {(time.time()-start_time)/(step+1):.2f}, logging time = {(time.time()-start_logging_time):.2f}")
             
             if wandb_log:
                 wandb.log({'losses/mse_loss': sae_mse_loss.item(),
@@ -327,8 +329,8 @@ if __name__ == '__main__':
                         'debug/l0_norm': l0_norm,
                         'debug/mean_dictionary_vector_length': torch.mean(torch.linalg.vector_norm(sae.dec.weight, dim=0)),
                         "feature_density/feature_density_histograms": wandb.Image(feat_density),
-                        "feature_density/min_log_feat_density": log_feature_density.min().item(),
-                        "feature_density/num_alive_neurons": len(log_feature_density),
+                        "feature_density/min_log_feat_density": min_log_feature_density,
+                        "feature_density/num_alive_neurons": num_alive_neurons,
                         })
 
     print(f'Exited loop after training on {N // batch_size * batch_size} examples')
