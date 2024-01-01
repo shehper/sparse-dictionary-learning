@@ -196,8 +196,8 @@ if __name__ == '__main__':
 
 
     ## Compute and store MLP activations, full transformer loss and ablated MLP loss on evaluation text data
-    mlp_acts_storage = torch.tensor([], dtype=torch.float16, device=device)
-    res_stream_storage = torch.tensor([], dtype=torch.float16, device=device)
+    mlp_acts_storage = torch.tensor([], dtype=torch.float16)
+    res_stream_storage = torch.tensor([], dtype=torch.float16)
     full_loss, mlp_ablated_loss = 0, 0
     for iter in range(eval_contexts // gpt_batch_size):    
         if device_type == 'cuda':
@@ -208,8 +208,8 @@ if __name__ == '__main__':
             x = X[iter * gpt_batch_size: (iter + 1) * gpt_batch_size].to(device)
             y = Y[iter * gpt_batch_size: (iter + 1) * gpt_batch_size].to(device)
         res_stream, mlp_activations, batch_loss, batch_ablated_loss = model.forward_with_and_without_mlp(x, y)    
-        mlp_acts_storage = torch.cat([mlp_acts_storage, mlp_activations.to(dtype=torch.float16)])
-        res_stream_storage = torch.cat([res_stream_storage, res_stream.to(dtype=torch.float16)])
+        mlp_acts_storage = torch.cat([mlp_acts_storage, mlp_activations.to(dtype=torch.float16, device='cpu')])
+        res_stream_storage = torch.cat([res_stream_storage, res_stream.to(dtype=torch.float16, device='cpu')])
         full_loss += batch_loss
         mlp_ablated_loss += batch_ablated_loss
     full_loss /= (eval_contexts // gpt_batch_size)
