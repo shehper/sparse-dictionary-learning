@@ -193,43 +193,89 @@ class GPT(nn.Module):
         return logits, loss
     
     @torch.no_grad()
-    def get_gelu_acts(self, idx):
-        # returns GeLU activations of MLP of the last decoder block. 
+    def loss_from_mlp_acts(self, residual_stream, mlp_acts, targets):
+        # given mlp activations of the final decoder block, compute loss 
+        # this is useful for constructing reconstructed loss
+        final_mlp = self.transformer.h[-1].mlp
+        mlp_output = final_mlp.dropout(final_mlp.c_proj(mlp_acts))
+        x = residual_stream + mlp_output
+        x = self.transformer.ln_f(x)
+        logits = self.lm_head(x)
+        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+        return loss
+
+    @torch.no_grad()
+    def forward_with_and_without_mlp(self, idx, targets):
+        # returns GeLU activations of MLP of the last decoder block.
+
         device = idx.device
         b, t = idx.size()
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
         pos = torch.arange(0, t, dtype=torch.long, device=device) # shape (t)
 
+        # forward pass up until the last decoder block
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h[:-1]: # forward pass through first i-1 blocks
             x = block(x)
 
-        last_block = self.transformer.h[-1] 
-        x = last_block.ln_2(x + last_block.attn(last_block.ln_1(x))) # layer norms and attn in ith block
-        x = last_block.mlp.gelu(last_block.mlp.c_fc(x)) # mlp layer and gelu in ith block
-
-        return x
-    
-    @torch.no_grad()
-    def reconstructed_loss(self, sae, idx, targets):
-        # recons_acts are reconstructed activations of MLP of the ith layer
-        # idx is the tensor of tokenized text
-
-        original_acts = self.get_gelu_acts(idx)
-        _, out = sae(original_acts)
-        reconstructed_acts = out['recons_acts']
-
+        # compute attn and layer norm in the last decoder block
         last_block = self.transformer.h[-1]
-        x = last_block.mlp.dropout(last_block.mlp.c_proj(reconstructed_acts))
+        x = x + last_block.attn(last_block.ln_1(x))
 
-        x = self.transformer.ln_f(x)
+        mlp_input = last_block.ln_2(x) # layer norms and attn in ith block
+        mlp_acts = last_block.mlp.gelu(last_block.mlp.c_fc(mlp_input)) # mlp layer and gelu in ith block
 
-        logits = self.lm_head(x)
-        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+        # compute full loss 
+        full_loss = self.loss_from_mlp_acts(residual_stream=x, mlp_acts=mlp_acts, targets=targets)
 
-        return loss
+        # compute mlp-ablated loss
+        # TODO: In MLP ablated transformer, do we include the pre-MLP LayerNorm? If yes, replace x by mlp_input below
+        mlp_ablated_stream = self.transformer.ln_f(x)
+        mlp_ablated_logits = self.lm_head(mlp_ablated_stream)
+        mlp_ablated_loss = F.cross_entropy(mlp_ablated_logits.view(-1, mlp_ablated_logits.size(-1)), targets.view(-1), ignore_index=-1)
+
+        return x, mlp_acts, full_loss, mlp_ablated_loss
+    
+    # @torch.no_grad()
+    # def get_gelu_acts(self, idx):
+    #     # returns GeLU activations of MLP of the last decoder block. 
+    #     device = idx.device
+    #     b, t = idx.size()
+    #     assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
+    #     pos = torch.arange(0, t, dtype=torch.long, device=device) # shape (t)
+
+    #     tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
+    #     pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
+    #     x = self.transformer.drop(tok_emb + pos_emb)
+    #     for block in self.transformer.h[:-1]: # forward pass through first i-1 blocks
+    #         x = block(x)
+
+    #     last_block = self.transformer.h[-1] 
+    #     x = last_block.ln_2(x + last_block.attn(last_block.ln_1(x))) # layer norms and attn in ith block
+    #     x = last_block.mlp.gelu(last_block.mlp.c_fc(x)) # mlp layer and gelu in ith block
+
+    #     return x
+    
+    # @torch.no_grad()
+    # def reconstructed_loss(self, sae, idx, targets):
+    #     # recons_acts are reconstructed activations of MLP of the ith layer
+    #     # idx is the tensor of tokenized text
+
+    #     original_acts = self.get_gelu_acts(idx)
+    #     _, out = sae(original_acts)
+    #     reconstructed_acts = out['recons_acts']
+
+    #     last_block = self.transformer.h[-1]
+    #     x = last_block.mlp.dropout(last_block.mlp.c_proj(reconstructed_acts))
+
+    #     x = self.transformer.ln_f(x)
+
+    #     logits = self.lm_head(x)
+    #     loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+
+    #     return loss
 
 
     def crop_block_size(self, block_size):
