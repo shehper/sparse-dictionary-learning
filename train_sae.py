@@ -2,7 +2,7 @@
 Train a Sparse AutoEncoder model
 
 Run on a macbook on a Shakespeare dataset as 
-python train_sae.py --dataset=shakespeare_char --gpt_dir=out-shakespeare-char --eval_contexts=1000 --batch_size=128 --device=cpu --eval_interval=100 --n_features=1024
+python train_sae.py --dataset=shakespeare_char --gpt_dir=out-shakespeare-char --eval_contexts=1000 --batch_size=128 --device=cpu --eval_interval=100 --n_features=1024 --save_checkpoint=False
 """
 import os
 import torch
@@ -32,7 +32,9 @@ n_features = 4096
 eval_contexts = 10000 # 10 million in anthropic paper; but we can choose 1 million as OWT dataset is smaller
 eval_context_tokens = 10 # same as anthropic paper
 eval_interval = 500
+save_checkpoint = True
 out_dir = 'out_autoencoder' # directory containing trained autoencoder model weights
+resampling_interval = 25000 # perform neuron resampling after every 25000 steps as in Anthropic's paper
 
 # -----------------------------------------------------------------------------
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
@@ -58,6 +60,8 @@ config['device_type'], config['eval_tokens'] = device_type, eval_tokens
 # Save and load the model
 # implement neuron resampling
 # manual inspection
+
+# TODO: It seems that gpu memory is not being fully utilized so maybe I can increase gpt_batch_size. 
 
 ## Define Autoencoder class, 
 class AutoEncoder(nn.Module):
@@ -121,11 +125,33 @@ def get_hist_image(data, bins='auto'):
 # a helper lambda to slice a torch tensor
 slice_fn = lambda storage: storage[iter * gpt_batch_size: (iter + 1) * gpt_batch_size]
 
+def load_data(step, batch_size, current_partition_index, current_partition, n_parts, examples_per_part, offset):
+    
+    batch_start = step * batch_size - current_partition_index * examples_per_part - offset # index of the start of the batch in the current partition
+    batch_end = (step + 1) * batch_size - current_partition_index * examples_per_part - offset # index of the end of the batch in the current partition
+
+    # Check if the end of the batch is beyond the current partition
+    if batch_end > examples_per_part and current_partition_index < n_parts - 1:
+        # Handle transition to next part
+        remaining = examples_per_part - batch_start
+        batch = current_partition[batch_start:].to(torch.float32)
+        current_partition_index += 1
+        del current_partition; gc.collect()
+        current_partition = torch.load(f'sae_data/sae_data_{current_partition_index}.pt')
+        batch = torch.cat([batch, current_partition[:batch_size - remaining]]).to(torch.float32)
+        offset = batch_size - remaining
+    else:
+        # Normal batch processing
+        batch = current_partition[batch_start:batch_end].to(torch.float32)
+    
+    assert len(batch) == batch_size, f"length of batch = {len(batch)} at step = {step} and partition number = {current_partition_index } is not correct"
+    
+    return batch, current_partition_index, current_partition, offset
+
 
 if __name__ == '__main__':
     
     torch.manual_seed(seed)
-    os.makedirs(out_dir, exist_ok=True)
 
     ## load tokenized text data
     data_dir = os.path.join('data', dataset)
@@ -150,21 +176,28 @@ if __name__ == '__main__':
         gpt = torch.compile(gpt) # requires PyTorch 2.0 (optional)
     block_size = gpt.config.block_size
 
+    ## LOAD AND SAVE DATA TO BE USED FOR NEURON RESAMPLING
 
-    ## recall that mlp activations data was saved in the folder 'sae_data' in multiple files 
+    ## LOAD TRAINING DATA FOR AUTOENCODER 
+    # recall that mlp activations data was saved in the folder 'sae_data' in multiple files 
     n_parts = len(next(os.walk('sae_data'))[2]) # number of partitions of (or files in) sae_data
-    
     # start by loading the first partition
-    current_part_index = 0 # partition number
-    current_part = torch.load(f'sae_data/sae_data_{current_part_index}.pt') # current partition
-    examples_per_part, n_ffwd = current_part.shape # number of examples per partition, gpt d_mlp
+    current_partition_index = 0 # partition number
+    current_partition = torch.load(f'sae_data/sae_data_{current_partition_index}.pt') # current partition
+    examples_per_part, n_ffwd = current_partition.shape # number of examples per partition, gpt d_mlp
     total_training_examples = n_parts * examples_per_part # total number of training examples for autoencoder
     offset = 0 # when partition number > 0, first 'offset' # of examples will be trained with exs from previous partition
-    print(f'successfully loaded the first partition of data from sae_data/sae_data_{current_part_index}.pt')
+    print(f'loaded the first partition of data from sae_data/sae_data_{current_partition_index}.pt')
     print(f'Approximate number of training examples: {total_training_examples}')
 
     memory = psutil.virtual_memory()
     print(f'Available memory after loading data: {memory.available / (1024**3):.2f} GB; memory usage: {memory.percent}%')
+
+    ## load data that will be used to resample neurons
+    sae_data_for_resampling_neurons = torch.load('sae_data_for_resampling_neurons.pt')
+    memory = psutil.virtual_memory()
+    print(f'loaded data or resampling neurons, available memory now: {memory.available / (1024**3):.2f} GB; memory usage: {memory.percent}%')
+
 
     ## Get text data for evaluation 
     X, Y = get_text_batch(text_data, block_size=block_size, batch_size=eval_contexts) # (eval_contexts, block_size) 
@@ -215,52 +248,54 @@ if __name__ == '__main__':
     run_name = f'autoencoder_{dataset}_{time.time():.0f}'
     if wandb_log:
         wandb.init(project=f'sparse-autoencoder-{dataset}', name=run_name, config=config)
+    if save_checkpoint:
+        os.makedirs(os.path.join(out_dir, run_name), exist_ok=True)
 
 
     ## TRAINING LOOP
     start_time = time.time()
     
     for step in range(total_training_examples // batch_size):
-
-        ## load a batch of data
-        
-        batch_start = step * batch_size - current_part_index * examples_per_part - offset # index of the start of the batch in the current partition
-        batch_end = (step + 1) * batch_size - current_part_index * examples_per_part - offset # index of the end of the batch in the current partition
-
-        # Check if the end of the batch is beyond the current partition
-        if batch_end > examples_per_part and current_part_index < n_parts - 1:
-            # Handle transition to next part
-            remaining = examples_per_part - batch_start
-            batch = current_part[batch_start:].to(torch.float32)
-            current_part_index += 1
-            del current_part; gc.collect()
-            current_part = torch.load(f'sae_data/sae_data_{current_part_index}.pt')
-            batch = torch.cat([batch, current_part[:batch_size - remaining]]).to(torch.float32)
-            offset = batch_size - remaining
-
-        else:
-            # Normal batch processing
-            batch = current_part[batch_start:batch_end].to(torch.float32)
-        
-        assert len(batch) == batch_size, f"length of batch = {len(batch)} at step = {step} and partition number = {current_part_index } is not correct"
-        
-        # send batch to device
+ 
+        ## load a batch of data        
+        batch, current_partition_index, current_partition, offset = load_data(step, batch_size, current_partition_index, current_partition, n_parts, examples_per_part, offset)
         batch = batch.pin_memory().to(device, non_blocking=True) if device_type == 'cuda' else batch.to(device)
         
-        ## -------- forward pass, backward pass, remove gradient information parallel to decoder columns, optimizer step, ----- ##
-        ## --------  normalize dictionary vectors ------- ##
+        ## training step
         optimizer.zero_grad(set_to_none=True) 
-        loss = autoencoder(batch)[0]
+        loss, f, _, _, _ = autoencoder(batch) # f has shape (batch_size, n_features)
         loss.backward()
         # TODO: this business of removing parallel components seems fishy. What purpose does it serve if you have to normalize
-        # the weights afterwards anyway?
+        # the weights afterwards anyway? I hope the method I apply here works okay
+        # remove gradient component paralle to weight
         autoencoder.dec.weight.grad = remove_parallel_component(autoencoder.dec.weight.grad, autoencoder.dec.weight)
         optimizer.step()
-        if step % 1000 == 0: # TODO: I am trying this new approach but this may not be perfect
-            # periodically update the norm of dictionary vectors
+        # periodically update the norm of dictionary vectors
+        if step % 1000 == 0: 
             with torch.no_grad():
                 autoencoder.dec.weight.data = F.normalize(autoencoder.dec.weight.data, dim=0)
         del batch; gc.collect(); torch.cuda.empty_cache() 
+
+        ## neuron resampling
+        # start keeping track of dead neurons when step is an odd multiple of resampling_interval//2
+        if step % (resampling_interval) == resampling_interval//2 and step < 1e5:
+            dead_neurons = set([feature for feature in range(n_features)])
+
+        # remove any autoencoder neurons from dead_neurons that are active in this training step
+        if (resampling_interval//2) <= step < resampling_interval or (resampling_interval//2)*3 <= step < resampling_interval*2 \
+        or (resampling_interval//2)*5 <= step < resampling_interval*3 or (resampling_interval//2)*7 <= step < resampling_interval*4:   
+            # torch.count_nonzero(f, dim=0) counts the number of examples on which each feature is active
+            # torch.count_nonzero(f, dim=0).nonzero() gives indices of alive features, which we discard from the set dead_neurons
+            for feature_number in torch.count_nonzero(f, dim=0).nonzero().view(-1):
+                dead_neurons.discard(feature_number.item())
+
+        if (step + 1) % resampling_interval == 0 and step < 1e5:
+            # compute the loss of the current model on 100 batches
+            # choose a batch of data 
+            # TODO: pick a batch of data
+            #batch = sae_data_for_resampling_neurons[batch_start: ]
+            raise NotImplemented
+
 
 
         ## log info
@@ -326,16 +361,16 @@ if __name__ == '__main__':
                 wandb.log(log_dict)
                 
             # save a checkpoint
-            checkpoint = {
-                    'autoencoder': autoencoder.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'log_dict': log_dict,
-                    'config': config
-                    }
-            print(f"saving checkpoint to {out_dir}")
-            torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'))
-
-    print(f'Exited loop after training on {total_training_examples // batch_size * batch_size} examples')
+            if step > 0 and save_checkpoint:
+                checkpoint = {
+                        'autoencoder': autoencoder.state_dict(),
+                        'optimizer': optimizer.state_dict(),
+                        'log_dict': log_dict,
+                        'config': config
+                        }
+                print(f"saving checkpoint to {out_dir}/{run_name}")
+                torch.save(checkpoint, os.path.join(out_dir, run_name, 'ckpt.pt'))
 
     if wandb_log:
-        wandb.finish()
+        wandb.finish()    
+    print(f'Finished training after training on {total_training_examples // batch_size * batch_size} examples')
