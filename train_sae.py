@@ -2,7 +2,7 @@
 Train a Sparse AutoEncoder model
 
 Run on a macbook on a Shakespeare dataset as 
-python train_sae.py --dataset=shakespeare_char --model_dir=out-shakespeare-char --eval_contexts=1000 --batch_size=128 --device=cpu --eval_interval=100 --n_features=1024
+python train_sae.py --dataset=shakespeare_char --gpt_dir=out-shakespeare-char --eval_contexts=1000 --batch_size=128 --device=cpu --eval_interval=100 --n_features=1024
 """
 import os
 import torch
@@ -22,7 +22,7 @@ import gc
 device = 'cuda'
 seed = 1442
 dataset = 'openwebtext'
-model_dir = 'out' 
+gpt_dir = 'out' 
 wandb_log = True
 l1_coeff = 3e-3
 learning_rate = 3e-4
@@ -32,6 +32,7 @@ n_features = 4096
 eval_contexts = 10000 # 10 million in anthropic paper; but we can choose 1 million as OWT dataset is smaller
 eval_context_tokens = 10 # same as anthropic paper
 eval_interval = 500
+out_dir = 'out_autoencoder' # directory containing trained autoencoder model weights
 
 # -----------------------------------------------------------------------------
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
@@ -48,7 +49,15 @@ config['device_type'], config['eval_tokens'] = device_type, eval_tokens
 # As it is, I am ignoring them
 
 # TODO: replace gc.collect(); torch.cuda.empty_cache() by using a context manager of the form ManagedMemory 
-# with an exit method
+# with an exit method that executes deletions and gc.collect(), torch.cuda_empty_cache. 
+# This will clean up the code
+
+# TODO: compile your gpt model and sae model for faster training?
+
+# TODO: Priority list:
+# Save and load the model
+# implement neuron resampling
+# manual inspection
 
 ## Define Autoencoder class, 
 class AutoEncoder(nn.Module):
@@ -116,16 +125,17 @@ slice_fn = lambda storage: storage[iter * gpt_batch_size: (iter + 1) * gpt_batch
 if __name__ == '__main__':
     
     torch.manual_seed(seed)
+    os.makedirs(out_dir, exist_ok=True)
 
     ## load tokenized text data
     data_dir = os.path.join('data', dataset)
     text_data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
 
     ## load GPT model
-    ckpt_path = os.path.join(model_dir, 'ckpt.pt')
+    ckpt_path = os.path.join(gpt_dir, 'ckpt.pt')
     checkpoint = torch.load(ckpt_path, map_location=device)
     gptconf = GPTConfig(**checkpoint['model_args'])
-    model = GPT(gptconf)
+    gpt = GPT(gptconf)
     state_dict = checkpoint['model']
     compile = False # TODO: Don't know why I needed to set compile to False before loading the model..
     # TODO: I dont know why the next 4 lines are needed. state_dict does not seem to have any keys with unwanted_prefix.
@@ -133,12 +143,12 @@ if __name__ == '__main__':
     for k,v in list(state_dict.items()):
         if k.startswith(unwanted_prefix):
             state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
-    model.load_state_dict(state_dict)
-    model.eval()
-    model.to(device)
+    gpt.load_state_dict(state_dict)
+    gpt.eval()
+    gpt.to(device)
     if compile:
-        model = torch.compile(model) # requires PyTorch 2.0 (optional)
-    block_size = model.config.block_size
+        gpt = torch.compile(gpt) # requires PyTorch 2.0 (optional)
+    block_size = gpt.config.block_size
 
 
     ## recall that mlp activations data was saved in the folder 'sae_data' in multiple files 
@@ -179,7 +189,7 @@ if __name__ == '__main__':
         x = slice_fn(X).pin_memory().to(device, non_blocking=True) if device_type == 'cuda' else slice_fn(X).to(device)
         y = slice_fn(Y).pin_memory().to(device, non_blocking=True) if device_type == 'cuda' else slice_fn(Y).to(device)
 
-        res_stream, mlp_activations, batch_loss, batch_ablated_loss = model.forward_with_and_without_mlp(x, y)    
+        res_stream, mlp_activations, batch_loss, batch_ablated_loss = gpt.forward_with_and_without_mlp(x, y)    
         mlp_activations_storage = torch.cat([mlp_activations_storage, mlp_activations.to(dtype=torch.float16, device='cpu')])
         residual_stream_storage = torch.cat([residual_stream_storage, res_stream.to(dtype=torch.float16, device='cpu')])
         full_loss += batch_loss
@@ -194,17 +204,17 @@ if __name__ == '__main__':
 
 
     ## initiate the autoencoder and optimizer
-    sae = AutoEncoder(n_ffwd, n_features, lam=l1_coeff).to(device)
-    optimizer = torch.optim.Adam(sae.parameters(), lr=learning_rate) 
+    autoencoder = AutoEncoder(n_ffwd, n_features, lam=l1_coeff).to(device)
+    optimizer = torch.optim.Adam(autoencoder.parameters(), lr=learning_rate) 
 
     # normalize the decoder weights; TODO: this is on trial basis for now
     with torch.no_grad():
-        sae.dec.weight.data = F.normalize(sae.dec.weight.data, dim=0)
+        autoencoder.dec.weight.data = F.normalize(autoencoder.dec.weight.data, dim=0)
     
     ## WANDB LOG
-    run_name = f'sae_{dataset}_{time.time():.0f}'
+    run_name = f'autoencoder_{dataset}_{time.time():.0f}'
     if wandb_log:
-        wandb.init(project=f'sae-{dataset}', name=run_name, config=config)
+        wandb.init(project=f'sparse-autoencoder-{dataset}', name=run_name, config=config)
 
 
     ## TRAINING LOOP
@@ -240,19 +250,19 @@ if __name__ == '__main__':
         ## -------- forward pass, backward pass, remove gradient information parallel to decoder columns, optimizer step, ----- ##
         ## --------  normalize dictionary vectors ------- ##
         optimizer.zero_grad(set_to_none=True) 
-        loss = sae(batch)[0]
+        loss = autoencoder(batch)[0]
         loss.backward()
         # TODO: this business of removing parallel components seems fishy. What purpose does it serve if you have to normalize
         # the weights afterwards anyway?
-        sae.dec.weight.grad = remove_parallel_component(sae.dec.weight.grad, sae.dec.weight)
+        autoencoder.dec.weight.grad = remove_parallel_component(autoencoder.dec.weight.grad, autoencoder.dec.weight)
         optimizer.step()
         if step % 1000 == 0: # TODO: I am trying this new approach but this may not be perfect
             # periodically update the norm of dictionary vectors
             with torch.no_grad():
-                sae.dec.weight.data = F.normalize(sae.dec.weight.data, dim=0)
+                autoencoder.dec.weight.data = F.normalize(autoencoder.dec.weight.data, dim=0)
         del batch; gc.collect(); torch.cuda.empty_cache() 
 
-        
+
         ## log info
         if step % eval_interval == 0:
             
@@ -275,7 +285,7 @@ if __name__ == '__main__':
                     batch_targets = slice_fn(Y).to(device)
 
                 with torch.no_grad():
-                    batch_loss, batch_f, batch_reconst_acts, batch_mseloss, batch_l1loss = sae(batch_mlp_activations)
+                    batch_loss, batch_f, batch_reconst_acts, batch_mseloss, batch_l1loss = autoencoder(batch_mlp_activations)
 
                 # evaluate number of feature activations (number of tokens on which each feature activates)
                 batch_f = batch_f.to('cpu')
@@ -285,7 +295,7 @@ if __name__ == '__main__':
                 del batch_mlp_activations, batch_f, selected_feature_acts; gc.collect(); torch.cuda.empty_cache()
 
                 # Compute reconstructed loss from batch_reconst_acts
-                log_dict['losses/reconst_nll'] += model.loss_from_mlp_acts(batch_res_stream, batch_reconst_acts, batch_targets)
+                log_dict['losses/reconst_nll'] += gpt.loss_from_mlp_acts(batch_res_stream, batch_reconst_acts, batch_targets)
                 log_dict['losses/autoencoder_loss'] += batch_loss 
                 log_dict['losses/mse_loss'] += batch_mseloss
                 log_dict['losses/l1_loss'] += batch_l1loss
@@ -302,13 +312,28 @@ if __name__ == '__main__':
             feature_density_histogram = get_hist_image(log_feature_activation_density)
             print(f"batch: {step}/{total_training_examples // batch_size}, time per step: {(time.time()-start_time)/(step+1):.2f}, logging time = {(time.time()-start_logging_time):.2f}")
 
-            if wandb_log:
-                wandb.log(log_dict | 
-                    {'debug/mean_dictionary_vector_length': torch.mean(torch.linalg.vector_norm(sae.dec.weight, dim=0)),
+            # log more metrics
+            log_dict.update(
+                    {'debug/mean_dictionary_vector_length': torch.mean(torch.linalg.vector_norm(autoencoder.dec.weight, dim=0)),
                     'feature_density/feature_density_histograms': wandb.Image(feature_density_histogram),
                     'feature_density/min_log_feat_density': log_feature_activation_density.min().item() if len(log_feature_activation_density) > 0 else -100,
                     'feature_density/num_alive_neurons': len(log_feature_activation_density),
+                    'training_step': step, 
+                    'training_examples': step * batch_size
                     })
+
+            if wandb_log:
+                wandb.log(log_dict)
+                
+            # save a checkpoint
+            checkpoint = {
+                    'autoencoder': autoencoder.state_dict(),
+                    'optimizer': optimizer.state_dict(),
+                    'log_dict': log_dict,
+                    'config': config
+                    }
+            print(f"saving checkpoint to {out_dir}")
+            torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'))
 
     print(f'Exited loop after training on {total_training_examples // batch_size * batch_size} examples')
 
