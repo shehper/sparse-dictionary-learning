@@ -63,6 +63,10 @@ config['device_type'], config['eval_tokens'] = device_type, eval_tokens
 
 # TODO: It seems that gpu memory is not being fully utilized so maybe I can increase gpt_batch_size. 
 
+# TODO: In recent experiments, feature activation sparsity starts off from infinity and decays fast to ~0. What's going on?
+
+# TODO: how are neural networks initialized 
+
 ## Define Autoencoder class, 
 class AutoEncoder(nn.Module):
     def __init__(self, n, m, lam=0.003):
@@ -289,12 +293,18 @@ if __name__ == '__main__':
             for feature_number in torch.count_nonzero(f, dim=0).nonzero().view(-1):
                 dead_neurons.discard(feature_number.item())
 
-        if (step + 1) % resampling_interval == 0 and step < 1e5:
+
+        if (step + 1) % resampling_interval == 0 and step < 1e5 and len(dead_neurons) > 0:
+            print(f'At training step = {step}, there are {len(dead_neurons)} that have not fired in the last {resampling_interval//2} training steps')
             # compute the loss of the current model on 100 batches
             # choose a batch of data 
             # TODO: pick a batch of data
             #batch = sae_data_for_resampling_neurons[batch_start: ]
-            raise NotImplemented
+            
+            temp_layer = nn.Linear(n_features, n_ffwd)                
+            with torch.no_grad():
+                autoencoder.dec.weight[:, torch.tensor(list(dead_neurons))] = temp_layer.weight[:, torch.tensor(list(dead_neurons))]
+            del temp_layer; gc.collect(); torch.cuda.empty_cache()
 
 
 
