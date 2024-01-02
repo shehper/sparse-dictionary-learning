@@ -295,16 +295,17 @@ if __name__ == '__main__':
 
 
         if (step + 1) % resampling_interval == 0 and step < 1e5 and len(dead_neurons) > 0:
-            print(f'At training step = {step}, there are {len(dead_neurons)} that have not fired in the last {resampling_interval//2} training steps')
+            print(f'At training step = {step}, there are {len(dead_neurons)} neurons that have not fired in the last {resampling_interval//2} training steps')
             # compute the loss of the current model on 100 batches
             # choose a batch of data 
             # TODO: pick a batch of data
-            #batch = sae_data_for_resampling_neurons[batch_start: ]
-            
-            temp_layer = nn.Linear(n_features, n_ffwd)                
+            #batch = sae_data_for_resampling_neurons[batch_start: ]            
+            temp_encoder_layer = nn.Linear(n_ffwd, n_features)
+            temp_decoder_layer = nn.Linear(n_features, n_ffwd)   
             with torch.no_grad():
-                autoencoder.dec.weight[:, torch.tensor(list(dead_neurons))] = temp_layer.weight[:, torch.tensor(list(dead_neurons))]
-            del temp_layer; gc.collect(); torch.cuda.empty_cache()
+                autoencoder.enc.weight[torch.tensor(list(dead_neurons))] = temp_encoder_layer.weight[torch.tensor(list(dead_neurons))]
+                autoencoder.dec.weight[:, torch.tensor(list(dead_neurons))] = temp_decoder_layer.weight[:, torch.tensor(list(dead_neurons))]
+            del temp_encoder_layer, temp_decoder_layer; gc.collect(); torch.cuda.empty_cache()
 
 
 
