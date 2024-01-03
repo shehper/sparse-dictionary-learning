@@ -299,7 +299,7 @@ if __name__ == '__main__':
         # start keeping track of dead neurons when step is an odd multiple of resampling_interval//2
         if step % (resampling_interval) == resampling_interval//2 and step < 1e5:
             dead_neurons = set([feature for feature in range(n_features)])
-
+            initial_step_for_neuron_tracking = step # the step at which we started tracking dead neurons 
             
         # remove any autoencoder neurons from dead_neurons that are active in this training step
         if (resampling_interval//2) <= step < resampling_interval or (resampling_interval//2)*3 <= step < resampling_interval*2 \
@@ -310,7 +310,7 @@ if __name__ == '__main__':
                 dead_neurons.discard(feature_number.item())
 
             if step % 100 == 0:
-                print(f'At training step = {step}, there are {len(dead_neurons)} neurons that have not fired in the last {resampling_interval//2} training steps')
+                print(f'At training step = {step}, there are {len(dead_neurons)} neurons that have not fired since training step = {initial_step_for_neuron_tracking}')
 
 
         if (step + 1) % resampling_interval == 0 and step < 1e5:
@@ -401,6 +401,9 @@ if __name__ == '__main__':
                     {'debug/mean_dictionary_vector_length': torch.mean(torch.linalg.vector_norm(autoencoder.dec.weight, dim=0)),
                     'feature_density/feature_density_histograms': wandb.Image(feature_density_histogram),
                     'feature_density/min_log_feat_density': log_feature_activation_density.min().item() if len(log_feature_activation_density) > 0 else -100,
+                    'feature_density/num_neurons_with_feature_density_below_1e-3': (log_feature_activation_density < -3).sum(),
+                    'feature_density/num_neurons_with_feature_density_below_1e-4': (log_feature_activation_density < -4).sum(), 
+                    'feature_density/num_neurons_with_feature_density_below_1e-5': (log_feature_activation_density < -5).sum(),
                     'feature_density/num_alive_neurons': len(log_feature_activation_density),
                     'training_step': step, 
                     'training_examples': step * batch_size
@@ -415,7 +418,8 @@ if __name__ == '__main__':
                     'autoencoder': autoencoder.state_dict(),
                     'optimizer': optimizer.state_dict(),
                     'log_dict': log_dict,
-                    'config': config
+                    'config': config,
+                    'feature_activation_counts': feature_activation_counts, # may be used later to identify alive vs dead neurons
                     }
             print(f"saving checkpoint to {out_dir}/{run_name} at training step = {step}")
             torch.save(checkpoint, os.path.join(out_dir, run_name, 'ckpt.pt'))
