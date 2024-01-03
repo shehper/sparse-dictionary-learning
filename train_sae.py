@@ -262,7 +262,6 @@ if __name__ == '__main__':
     if save_checkpoint:
         os.makedirs(os.path.join(out_dir, run_name), exist_ok=True)
 
-
     ## TRAINING LOOP
     start_time = time.time()
     
@@ -272,26 +271,33 @@ if __name__ == '__main__':
         batch, current_partition_index, current_partition, offset = load_data(step, batch_size, current_partition_index, current_partition, n_parts, examples_per_part, offset)
         batch = batch.pin_memory().to(device, non_blocking=True) if device_type == 'cuda' else batch.to(device)
         
-        ## training step
+        # forward, backward pass
         optimizer.zero_grad(set_to_none=True) 
         loss, f, _, _, _ = autoencoder(batch) # f has shape (batch_size, n_features)
         loss.backward()
-        # TODO: this business of removing parallel components seems fishy. What purpose does it serve if you have to normalize
-        # the weights afterwards anyway? I hope the method I apply here works okay
-        # remove gradient component paralle to weight
+
+        # remove component of gradient parallel to weight # TODO: I am still not convinced this is the best approach
         autoencoder.dec.weight.grad = remove_parallel_component(autoencoder.dec.weight.grad, autoencoder.dec.weight)
+        
+        # step
         optimizer.step()
-        # periodically update the norm of dictionary vectors
+
+        # periodically update the norm of dictionary vectors to make sure they don't deviate too far from 1.
         if step % 1000 == 0: 
             with torch.no_grad():
                 autoencoder.dec.weight.data = F.normalize(autoencoder.dec.weight.data, dim=0)
+        
         del batch; gc.collect(); torch.cuda.empty_cache() 
+
+        # TODO: modify this code somehow to allow for neuron resampling more than 4 times and at step > 1e5 perhaps?
+        # or maybe just impose a condition that neurons are resampled only 4 times in total
 
         ## neuron resampling
         # start keeping track of dead neurons when step is an odd multiple of resampling_interval//2
         if step % (resampling_interval) == resampling_interval//2 and step < 1e5:
             dead_neurons = set([feature for feature in range(n_features)])
 
+            
         # remove any autoencoder neurons from dead_neurons that are active in this training step
         if (resampling_interval//2) <= step < resampling_interval or (resampling_interval//2)*3 <= step < resampling_interval*2 \
         or (resampling_interval//2)*5 <= step < resampling_interval*3 or (resampling_interval//2)*7 <= step < resampling_interval*4:   
@@ -300,19 +306,24 @@ if __name__ == '__main__':
             for feature_number in torch.count_nonzero(f, dim=0).nonzero().view(-1):
                 dead_neurons.discard(feature_number.item())
 
+            if step % 100 == 0:
+                print(f'At training step = {step}, there are {len(dead_neurons)} neurons that have not fired in the last {resampling_interval//2} training steps')
 
-        if (step + 1) % resampling_interval == 0 and step < 1e5 and len(dead_neurons) > 0:
-            print(f'At training step = {step}, there are {len(dead_neurons)} neurons that have not fired in the last {resampling_interval//2} training steps')
+
+
+        if (step + 1) % resampling_interval == 0 and step < 1e5:
             # compute the loss of the current model on 100 batches
             # choose a batch of data 
             # TODO: pick a batch of data
-            #batch = sae_data_for_resampling_neurons[batch_start: ]            
-            temp_encoder_layer = nn.Linear(n_ffwd, n_features)
-            temp_decoder_layer = nn.Linear(n_features, n_ffwd)   
-            with torch.no_grad():
-                autoencoder.enc.weight[torch.tensor(list(dead_neurons))] = temp_encoder_layer.weight[torch.tensor(list(dead_neurons))]
-                autoencoder.dec.weight[:, torch.tensor(list(dead_neurons))] = temp_decoder_layer.weight[:, torch.tensor(list(dead_neurons))]
-            del temp_encoder_layer, temp_decoder_layer; gc.collect(); torch.cuda.empty_cache()
+            #batch = sae_data_for_resampling_neurons[batch_start: ] 
+            if len(dead_neurons) > 0:           
+                temp_encoder_layer = nn.Linear(n_ffwd, n_features)
+                temp_decoder_layer = nn.Linear(n_features, n_ffwd)   
+                with torch.no_grad():
+                    autoencoder.enc.weight[torch.tensor(list(dead_neurons))] = temp_encoder_layer.weight[torch.tensor(list(dead_neurons))]
+                    autoencoder.dec.weight[:, torch.tensor(list(dead_neurons))] = temp_decoder_layer.weight[:, torch.tensor(list(dead_neurons))]
+                del temp_encoder_layer, temp_decoder_layer; gc.collect(); torch.cuda.empty_cache()
+                print(f'resampled {len(dead_neurons)} neurons at training step = {step}')
 
 
 
@@ -325,6 +336,18 @@ if __name__ == '__main__':
                         'losses/feature_activation_sparsity': 0}
             feature_activation_counts = torch.zeros(n_features, dtype=torch.float32) # initiate with zeros
 
+            # key: feature number; val: list of tuples (top activation value, corresponding token) 
+            tokens_with_top_feature_activations = {i: [] for i in range(n_features)}
+
+            # SIMPLEST LOGIC:
+            # in batch_f_on_subset_of_tokens, find 10 values of (context, eval_token_in_context, activation_value) for each feature
+            # use context, eval_token_in_context, batch_targets and subset_of_tokens to find the token id that gave the highest activation value
+            # add (top_activation_value, token) to the list for each feature in the dictionary above
+            # sort each list and keep only top 10 values
+            # 
+
+            # perhaps later I can find a faster solution later but this should work in the first go. 
+
             for iter in range(num_eval_batches):
 
                 # select batch of mlp activations, residual stream and y 
@@ -336,7 +359,7 @@ if __name__ == '__main__':
                     batch_mlp_activations = slice_fn(mlp_activations_storage).to(device)
                     batch_res_stream = slice_fn(residual_stream_storage).to(device)
                     batch_targets = slice_fn(Y).to(device)
-
+                
                 with torch.no_grad():
                     batch_loss, batch_f, batch_reconstructed_activations, batch_mseloss, batch_l1loss = autoencoder(batch_mlp_activations)
                     
