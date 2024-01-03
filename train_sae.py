@@ -30,11 +30,12 @@ gpt_batch_size = 16 # batch size for computing reconstruction nll
 batch_size = 8192 # 8192 for owt
 n_features = 4096
 eval_contexts = 10000 # 10 million in anthropic paper; but we can choose 1 million as OWT dataset is smaller
-eval_context_tokens = 10 # same as anthropic paper
-eval_interval = 500
-save_checkpoint = True
+eval_tokens_per_context = 10 # same as anthropic paper
+eval_interval = 1000 # number of training steps after which the autoencoder is evaluated
+save_checkpoint = True # whether to save model, optimizer, etc or not
+save_interval = 10000 # number of training steps after which a checkpoint will be saved
 out_dir = 'out_autoencoder' # directory containing trained autoencoder model weights
-resampling_interval = 25000 # perform neuron resampling after every 25000 steps as in Anthropic's paper
+resampling_interval = 25000 # number of training steps after which neuron resampling will be performed
 
 # -----------------------------------------------------------------------------
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
@@ -44,7 +45,7 @@ config = {k: globals()[k] for k in config_keys} # will be useful for logging
 
 # variables that depend on input parameters
 device_type = 'cuda' if 'cuda' in device else 'cpu'
-eval_tokens = eval_contexts * eval_context_tokens
+eval_tokens = eval_contexts * eval_tokens_per_context
 config['device_type'], config['eval_tokens'] = device_type, eval_tokens
 
 # TODO: Fix my training loops by including training on the last few examples with count < batch_size
@@ -66,6 +67,12 @@ config['device_type'], config['eval_tokens'] = device_type, eval_tokens
 # TODO: In recent experiments, feature activation sparsity starts off from infinity and decays fast to ~0. What's going on?
 
 # TODO: how are neural networks initialized 
+
+# TODO: log crude measures like count of neurons with feaeture density < 1e-4 and < 1e-5.
+
+# TODO: I dont like the name gpt_batch_size. Change that. 
+
+# TODO: log gpu metrics more closely 
 
 ## Define Autoencoder class, 
 class AutoEncoder(nn.Module):
@@ -111,7 +118,7 @@ def get_text_batch(data, block_size, batch_size):
 
 
 ## a helper function to convert a histogram to a PIL image so that it can be logged with wandb
-def get_hist_image(data, bins='auto'):
+def get_histogram_image(data, bins='auto'):
     # plot a histogram
     _, ax = plt.subplots()
     ax.hist(data, bins=bins)
@@ -205,8 +212,8 @@ if __name__ == '__main__':
 
     ## Get text data for evaluation 
     X, Y = get_text_batch(text_data, block_size=block_size, batch_size=eval_contexts) # (eval_contexts, block_size) 
-    # in each context, randomly select eval_context_tokens (=10 in Anthropic's paper) where 
-    selected_tokens_loc = [torch.randint(block_size, (eval_context_tokens,)) for _ in range(eval_contexts)]
+    # in each context, randomly select eval_tokens_per_context (=10 in Anthropic's paper) where 
+    subsets_of_tokens_locations = [torch.randint(block_size, (eval_tokens_per_context,)) for _ in range(eval_contexts)]
     # Note: for eval_contexts=1 million it will take 15.6GB of CPU MEMORY --- 7.81GB each for x and y
     # perhaps we will have to go one order of magnitude lower; use 0.1million contexts
     memory = psutil.virtual_memory()
@@ -314,7 +321,7 @@ if __name__ == '__main__':
             
             start_logging_time = time.time()
 
-            log_dict = {'losses/reconst_nll': 0, 'losses/autoencoder_loss': 0, 'losses/mse_loss': 0, 'losses/l1_loss': 0, 
+            log_dict = {'losses/reconstructed_nll': 0, 'losses/autoencoder_loss': 0, 'losses/mse_loss': 0, 'losses/l1_loss': 0, 
                         'losses/feature_activation_sparsity': 0}
             feature_activation_counts = torch.zeros(n_features, dtype=torch.float32) # initiate with zeros
 
@@ -331,31 +338,37 @@ if __name__ == '__main__':
                     batch_targets = slice_fn(Y).to(device)
 
                 with torch.no_grad():
-                    batch_loss, batch_f, batch_reconst_acts, batch_mseloss, batch_l1loss = autoencoder(batch_mlp_activations)
+                    batch_loss, batch_f, batch_reconstructed_activations, batch_mseloss, batch_l1loss = autoencoder(batch_mlp_activations)
+                    
+                batch_f = batch_f.to('cpu') # (gpt_batch_size, block_size, n_features)
 
-                # evaluate number of feature activations (number of tokens on which each feature activates)
-                batch_f = batch_f.to('cpu')
-                selected_feature_acts = torch.stack([batch_f[i, selected_tokens_loc[iter], :] for i in range(gpt_batch_size)])  # (b, tokens_per_eval_context, n_features)
-                feature_activation_counts += torch.count_nonzero(selected_feature_acts, dim=[0, 1]) # (n_features, )
-                log_dict['losses/feature_activation_sparsity'] += torch.mean(torch.count_nonzero(batch_f.view(-1, batch_f.shape[-1]), dim=-1), dtype=torch.float16) 
-                del batch_mlp_activations, batch_f, selected_feature_acts; gc.collect(); torch.cuda.empty_cache()
+                # restrict batch_f to a subset of eval_tokens_per_context tokens in each context; shape: (gpt_batch_size, eval_tokens_per_context, n_features)
+                batch_f_on_subset_of_tokens = torch.stack([batch_f[i, subsets_of_tokens_locations[iter], :] for i in range(gpt_batch_size)])  
+                
+                # for each feature, calculate the TOTAL number of tokens on which it is active; shape: (n_features, ) 
+                feature_activation_counts += torch.count_nonzero(batch_f_on_subset_of_tokens, dim=[0, 1]) # (n_features, )
 
-                # Compute reconstructed loss from batch_reconst_acts
-                log_dict['losses/reconst_nll'] += gpt.loss_from_mlp_acts(batch_res_stream, batch_reconst_acts, batch_targets)
+                # calculat the AVERAGE number of non-zero entries in each feature vector
+                log_dict['losses/feature_activation_sparsity'] += torch.mean(torch.count_nonzero(batch_f_on_subset_of_tokens, dim=-1), dtype=torch.float32)
+ 
+                del batch_mlp_activations, batch_f, batch_f_on_subset_of_tokens; gc.collect(); torch.cuda.empty_cache()
+
+                # Compute reconstructed loss from batch_reconstructed_activations
+                log_dict['losses/reconstructed_nll'] += gpt.loss_from_mlp_acts(batch_res_stream, batch_reconstructed_activations, batch_targets)
                 log_dict['losses/autoencoder_loss'] += batch_loss 
                 log_dict['losses/mse_loss'] += batch_mseloss
                 log_dict['losses/l1_loss'] += batch_l1loss
-                del batch_res_stream, batch_reconst_acts, batch_targets; gc.collect(); torch.cuda.empty_cache()
+                del batch_res_stream, batch_reconstructed_activations, batch_targets; gc.collect(); torch.cuda.empty_cache()
 
             # take mean of all loss values by dividing by number of evaluation batches
             log_dict = {key: val/num_eval_batches for key, val in log_dict.items()}
 
             # add nll score to log_dict
-            log_dict['losses/nll_score'] = (full_loss - log_dict['losses/reconst_nll'])/(full_loss - mlp_ablated_loss)
+            log_dict['losses/nll_score'] = (full_loss - log_dict['losses/reconstructed_nll'])/(full_loss - mlp_ablated_loss)
             
             # compute feature density and plot a histogram
             log_feature_activation_density = np.log10(feature_activation_counts[feature_activation_counts != 0]/(eval_tokens)) # (n_features,)
-            feature_density_histogram = get_hist_image(log_feature_activation_density)
+            feature_density_histogram = get_histogram_image(log_feature_activation_density)
             print(f"batch: {step}/{total_training_examples // batch_size}, time per step: {(time.time()-start_time)/(step+1):.2f}, logging time = {(time.time()-start_logging_time):.2f}")
 
             # log more metrics
@@ -372,15 +385,15 @@ if __name__ == '__main__':
                 wandb.log(log_dict)
                 
             # save a checkpoint
-            if step > 0 and save_checkpoint:
-                checkpoint = {
-                        'autoencoder': autoencoder.state_dict(),
-                        'optimizer': optimizer.state_dict(),
-                        'log_dict': log_dict,
-                        'config': config
-                        }
-                print(f"saving checkpoint to {out_dir}/{run_name}")
-                torch.save(checkpoint, os.path.join(out_dir, run_name, 'ckpt.pt'))
+        if step > 0 and step % save_interval == 0 and save_checkpoint:
+            checkpoint = {
+                    'autoencoder': autoencoder.state_dict(),
+                    'optimizer': optimizer.state_dict(),
+                    'log_dict': log_dict,
+                    'config': config
+                    }
+            print(f"saving checkpoint to {out_dir}/{run_name} at training step = {step}")
+            torch.save(checkpoint, os.path.join(out_dir, run_name, 'ckpt.pt'))
 
     if wandb_log:
         wandb.finish()    
