@@ -252,11 +252,14 @@ if __name__ == '__main__':
     optimizer = torch.optim.Adam(autoencoder.parameters(), lr=learning_rate) 
 
     # normalize the decoder weights; TODO: this is on trial basis for now
+    # TODO: when you do this, do you change the distribution from which the weights are drawn?
+    # Perhaps computing weight.mean() and weight.std() will be useful. 
+    # inituitively, mean should not change because of normalization but 
     with torch.no_grad():
         autoencoder.dec.weight.data = F.normalize(autoencoder.dec.weight.data, dim=0)
     
     ## WANDB LOG
-    run_name = f'autoencoder_{dataset}_{time.time():.0f}'
+    run_name = f'{time.time():2f}-autoencoder-{dataset}'
     if wandb_log:
         wandb.init(project=f'sparse-autoencoder-{dataset}', name=run_name, config=config)
     if save_checkpoint:
@@ -310,15 +313,14 @@ if __name__ == '__main__':
                 print(f'At training step = {step}, there are {len(dead_neurons)} neurons that have not fired in the last {resampling_interval//2} training steps')
 
 
-
         if (step + 1) % resampling_interval == 0 and step < 1e5:
             # compute the loss of the current model on 100 batches
             # choose a batch of data 
             # TODO: pick a batch of data
             #batch = sae_data_for_resampling_neurons[batch_start: ] 
             if len(dead_neurons) > 0:           
-                temp_encoder_layer = nn.Linear(n_ffwd, n_features)
-                temp_decoder_layer = nn.Linear(n_features, n_ffwd)   
+                temp_encoder_layer = nn.Linear(n_ffwd, n_features, device=device)
+                temp_decoder_layer = nn.Linear(n_features, n_ffwd, device=device)
                 with torch.no_grad():
                     autoencoder.enc.weight[torch.tensor(list(dead_neurons))] = temp_encoder_layer.weight[torch.tensor(list(dead_neurons))]
                     autoencoder.dec.weight[:, torch.tensor(list(dead_neurons))] = temp_decoder_layer.weight[:, torch.tensor(list(dead_neurons))]
