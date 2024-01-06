@@ -185,7 +185,7 @@ if __name__ == '__main__':
         
         batch_f = batch_f.to('cpu') # (gpt_batch_size, block_size, n_features)
         batch_token_indices = slice_fn(token_indices) # (gpt_batch_size, eval_tokens_per_context)
-        batch_contexts = slice_fn(X).to(device)
+        batch_contexts = slice_fn(X)
 
         # restrict batch_contexts and batch_f on the subset of tokens specified by batch_token_indices
         batch_contexts_subset = torch.gather(batch_contexts, 1, batch_token_indices) # (gpt_batch_size, eval_tokens_per_context)
