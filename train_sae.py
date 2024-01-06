@@ -37,16 +37,11 @@ save_interval = 10000 # number of training steps after which a checkpoint will b
 out_dir = 'out_autoencoder' # directory containing trained autoencoder model weights
 resampling_interval = 25000 # number of training steps after which neuron resampling will be performed
 
-# -----------------------------------------------------------------------------
-config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
-exec(open('configurator.py').read()) # overrides from command line or config file
-config = {k: globals()[k] for k in config_keys} # will be useful for logging
-# -----------------------------------------------------------------------------
+# TODO: change eval_tokens_per_context to tokens_per_eval_context for more clarity
 
-# variables that depend on input parameters
-device_type = 'cuda' if 'cuda' in device else 'cpu'
-eval_tokens = eval_contexts * eval_tokens_per_context
-config['device_type'], config['eval_tokens'] = device_type, eval_tokens
+# TODO: Do I need to specify subsets of tokens in neuron resampling? As it is, I don't think I have done that in data_for_resampling.py
+
+# TODO: subsets_of_tokens_locations should probably just be called token_indices
 
 # TODO: Fix my training loops by including training on the last few examples with count < batch_size
 # As it is, I am ignoring them
@@ -74,6 +69,10 @@ config['device_type'], config['eval_tokens'] = device_type, eval_tokens
 
 # TODO: log gpu metrics more closely 
 
+# TODO: whats the intuition behind the nll score?
+
+# TODO: Should I move the AutoEncoder class and all these helper functions to a different file?
+
 ## Define Autoencoder class, 
 class AutoEncoder(nn.Module):
     def __init__(self, n, m, lam=0.003):
@@ -94,19 +93,20 @@ class AutoEncoder(nn.Module):
         l1loss = F.l1_loss(f, torch.zeros(f.shape, device=f.device), reduction='sum') # scalar
         loss = mseloss + self.lam * l1loss # scalar
         return loss, f, reconst_acts, mseloss, l1loss
-
-
-# a function to remove components of gradients parallel to weights, needed during training
-def remove_parallel_component(grad, weight):
-    # remove gradient information parallel to weight vectors
     
-    # compute projection of gradient onto weight
-    # recall proj_b a = (a.\hat{b}) \hat{b} is the projection of a onto b
+    @torch.no_grad()
+    def normalize_decoder_columns(self):
+        autoencoder.dec.weight.data = F.normalize(autoencoder.dec.weight.data, dim=0)
 
-    unit_w = F.normalize(weight, dim=0) # \hat{b}
-    proj = torch.sum(grad * unit_w, dim=0) * unit_w 
-
-    return grad - proj
+    def remove_parallel_component_of_decoder_gradient(self):
+        # remove gradient information parallel to weight vectors
+        # to do so, compute projection of gradient onto weight
+        # recall projection of a onto b is proj_b a = (a.\hat{b}) \hat{b}
+        # here, a = grad, b = weight
+        # TODO: check again that this function is correct, also rewrite it if it can be written in a simpler way
+        unit_w = F.normalize(autoencoder.dec.weight, dim=0) # \hat{b}
+        proj = torch.sum(autoencoder.dec.weight.grad * unit_w, dim=0) * unit_w 
+        autoencoder.dec.weight.grad = autoencoder.dec.weight.grad - proj
 
 
 # a slightly modified version of nanoGPT get_batch function to get a batch of text data
@@ -160,15 +160,50 @@ def load_data(step, batch_size, current_partition_index, current_partition, n_pa
     return batch, current_partition_index, current_partition, offset
 
 
+def top_activations_and_tokens(f_subset, token_indices, contexts, context_on_each_side, k):
+    # input: f_subset of shape (gpt_batch_size, eval_tokens_per_context, n_features)
+    #           token_indices of shape  (gpt_batch_size, eval_tokens_per_context))
+    #           contexts of shape (gpt_batch_size, block_size)
+    #           context_on_each_side: an int, must satisfy (2 * context_on_each_side + 1) < block_size
+    #           k: an int, the number of top activation values to compute and return, must be < gpt_batch_size * eval_tokens_per_context
+    # returns: 
+    #           top_values: a tensor of shape (k, n_features)
+    #           top_tokens_with_context: a tensor of shape (k, n_features, 2 * context_on_each_side + 1)
+
+    # assert f.shape etc
+    # assert token_indices.shape etc
+    flattened_f = f_subset.view(-1, f_subset.shape[-1]) # (m * n, p)
+    top_values, flattened_indices = torch.topk(flattened_f, k=k, dim=0) # (k, p) 
+    unflattened_indices = torch.stack([flattened_indices // f_subset.shape[1], flattened_indices % f_subset.shape[1]], dim=2) # (k, p, 2)
+
+    # new_indices contain locations of tokens with highest feature activations in the original contexts
+    indices = unflattened_indices.clone()
+    indices[:, :, 1] = token_indices[unflattened_indices[:, :, 0], unflattened_indices[:, :, 1]]
+
+    top_tokens_with_contexts = torch.stack([contexts[indices[:, :, 0], indices[:, :, 1]+i] for i in range(-context_on_each_side, context_on_each_side + 1)], dim=2)
+
+    return top_values, top_tokens_with_contexts
+
+
 if __name__ == '__main__':
-    
+
+    # -----------------------------------------------------------------------------
+    config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
+    exec(open('configurator.py').read()) # overrides from command line or config file
+    config = {k: globals()[k] for k in config_keys} # will be useful for logging
+    # -----------------------------------------------------------------------------
+
+    # variables that depend on input parameters
+    config['device_type'] = device_type = 'cuda' if 'cuda' in device else 'cpu'
+    config['eval_tokens'] = eval_tokens = eval_contexts * eval_tokens_per_context
+        
     torch.manual_seed(seed)
 
     ## load tokenized text data
     data_dir = os.path.join('data', dataset)
     text_data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
 
-    ## load GPT model
+    ## load GPT model --- we need it to compute reconstruction nll and nll score
     ckpt_path = os.path.join(gpt_dir, 'ckpt.pt')
     checkpoint = torch.load(ckpt_path, map_location=device)
     gptconf = GPTConfig(**checkpoint['model_args'])
@@ -185,9 +220,7 @@ if __name__ == '__main__':
     gpt.to(device)
     if compile:
         gpt = torch.compile(gpt) # requires PyTorch 2.0 (optional)
-    block_size = gpt.config.block_size
-
-    ## LOAD AND SAVE DATA TO BE USED FOR NEURON RESAMPLING
+    config['block_size'] = block_size = gpt.config.block_size
 
     ## LOAD TRAINING DATA FOR AUTOENCODER 
     # recall that mlp activations data was saved in the folder 'sae_data' in multiple files 
@@ -204,7 +237,7 @@ if __name__ == '__main__':
     memory = psutil.virtual_memory()
     print(f'Available memory after loading data: {memory.available / (1024**3):.2f} GB; memory usage: {memory.percent}%')
 
-    ## load data that will be used to resample neurons
+    ## LOAD DATA TO BE USED FOR NEURON RESAMPLING
     sae_data_for_resampling_neurons = torch.load('sae_data_for_resampling_neurons.pt')
     memory = psutil.virtual_memory()
     print(f'loaded data or resampling neurons, available memory now: {memory.available / (1024**3):.2f} GB; memory usage: {memory.percent}%')
@@ -254,12 +287,11 @@ if __name__ == '__main__':
     # normalize the decoder weights; TODO: this is on trial basis for now
     # TODO: when you do this, do you change the distribution from which the weights are drawn?
     # Perhaps computing weight.mean() and weight.std() will be useful. 
-    # inituitively, mean should not change because of normalization but 
-    with torch.no_grad():
-        autoencoder.dec.weight.data = F.normalize(autoencoder.dec.weight.data, dim=0)
+    # inituitively, normalization should not change mean but it could change std
+    autoencoder.normalize_decoder_columns()
     
     ## WANDB LOG
-    run_name = f'{time.time():2f}-autoencoder-{dataset}'
+    run_name = f'{time.time():.2f}-autoencoder-{dataset}'
     if wandb_log:
         wandb.init(project=f'sparse-autoencoder-{dataset}', name=run_name, config=config)
     if save_checkpoint:
@@ -267,8 +299,9 @@ if __name__ == '__main__':
 
     ## TRAINING LOOP
     start_time = time.time()
-    
-    for step in range(total_training_examples // batch_size):
+    total_steps = total_training_examples // batch_size
+
+    for step in range(total_steps):
  
         ## load a batch of data        
         batch, current_partition_index, current_partition, offset = load_data(step, batch_size, current_partition_index, current_partition, n_parts, examples_per_part, offset)
@@ -280,15 +313,14 @@ if __name__ == '__main__':
         loss.backward()
 
         # remove component of gradient parallel to weight # TODO: I am still not convinced this is the best approach
-        autoencoder.dec.weight.grad = remove_parallel_component(autoencoder.dec.weight.grad, autoencoder.dec.weight)
+        autoencoder.remove_parallel_component_of_decoder_gradient()
         
         # step
         optimizer.step()
 
         # periodically update the norm of dictionary vectors to make sure they don't deviate too far from 1.
         if step % 1000 == 0: 
-            with torch.no_grad():
-                autoencoder.dec.weight.data = F.normalize(autoencoder.dec.weight.data, dim=0)
+            autoencoder.normalize_decoder_columns()
         
         del batch; gc.collect(); torch.cuda.empty_cache() 
 
@@ -369,7 +401,7 @@ if __name__ == '__main__':
 
                 # restrict batch_f to a subset of eval_tokens_per_context tokens in each context; shape: (gpt_batch_size, eval_tokens_per_context, n_features)
                 batch_f_on_subset_of_tokens = torch.stack([batch_f[i, subsets_of_tokens_locations[iter], :] for i in range(gpt_batch_size)])  
-                
+
                 # for each feature, calculate the TOTAL number of tokens on which it is active; shape: (n_features, ) 
                 feature_activation_counts += torch.count_nonzero(batch_f_on_subset_of_tokens, dim=[0, 1]) # (n_features, )
 
@@ -394,13 +426,14 @@ if __name__ == '__main__':
             # compute feature density and plot a histogram
             log_feature_activation_density = np.log10(feature_activation_counts[feature_activation_counts != 0]/(eval_tokens)) # (n_features,)
             feature_density_histogram = get_histogram_image(log_feature_activation_density)
-            print(f"batch: {step}/{total_training_examples // batch_size}, time per step: {(time.time()-start_time)/(step+1):.2f}, logging time = {(time.time()-start_logging_time):.2f}")
+            print(f"batch: {step}/{total_steps}, time per step: {(time.time()-start_time)/(step+1):.2f}, logging time = {(time.time()-start_logging_time):.2f}")
 
             # log more metrics
             log_dict.update(
                     {'debug/mean_dictionary_vector_length': torch.mean(torch.linalg.vector_norm(autoencoder.dec.weight, dim=0)),
                     'feature_density/feature_density_histograms': wandb.Image(feature_density_histogram),
                     'feature_density/min_log_feat_density': log_feature_activation_density.min().item() if len(log_feature_activation_density) > 0 else -100,
+                    'feature_density/num_neurons_with_feature_density_above_1e-3': (log_feature_activation_density > -3).sum(),
                     'feature_density/num_neurons_with_feature_density_below_1e-3': (log_feature_activation_density < -3).sum(),
                     'feature_density/num_neurons_with_feature_density_below_1e-4': (log_feature_activation_density < -4).sum(), 
                     'feature_density/num_neurons_with_feature_density_below_1e-5': (log_feature_activation_density < -5).sum(),
@@ -413,7 +446,7 @@ if __name__ == '__main__':
                 wandb.log(log_dict)
                 
             # save a checkpoint
-        if step > 0 and step % save_interval == 0 and save_checkpoint:
+        if step > 0 and (step % save_interval == 0 or step == total_steps - 1) and save_checkpoint:
             checkpoint = {
                     'autoencoder': autoencoder.state_dict(),
                     'optimizer': optimizer.state_dict(),
@@ -426,4 +459,4 @@ if __name__ == '__main__':
 
     if wandb_log:
         wandb.finish()    
-    print(f'Finished training after training on {total_training_examples // batch_size * batch_size} examples')
+    print(f'Finished training after training on {total_steps * batch_size} examples')
