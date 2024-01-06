@@ -10,7 +10,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from model import GPTConfig, GPT
 import numpy as np
-import wandb
 import time
 import matplotlib.pyplot as plt
 from PIL import Image
@@ -294,6 +293,7 @@ if __name__ == '__main__':
     ## WANDB LOG
     run_name = f'{time.time():.2f}-autoencoder-{dataset}'
     if wandb_log:
+        import wandb
         wandb.init(project=f'sparse-autoencoder-{dataset}', name=run_name, config=config)
     if save_checkpoint:
         os.makedirs(os.path.join(out_dir, run_name), exist_ok=True)
