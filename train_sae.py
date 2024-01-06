@@ -351,12 +351,10 @@ if __name__ == '__main__':
 
                 # select batch of mlp activations, residual stream and y 
                 if device_type == 'cuda':
-                    batch_token_indices = slice_fn(token_indices).pin_memory().to(device, non_blocking=True) # (gpt_batch_size, eval_tokens_per_context)
                     batch_mlp_activations = slice_fn(mlp_activations_storage).pin_memory().to(device, non_blocking=True) 
                     batch_res_stream = slice_fn(residual_stream_storage).pin_memory().to(device, non_blocking=True) 
                     batch_targets = slice_fn(Y).pin_memory().to(device, non_blocking=True) 
                 else:
-                    batch_token_indices = slice_fn(token_indices).to(device) # (gpt_batch_size, eval_tokens_per_context)
                     batch_mlp_activations = slice_fn(mlp_activations_storage).to(device)
                     batch_res_stream = slice_fn(residual_stream_storage).to(device)
                     batch_targets = slice_fn(Y).to(device)
@@ -365,6 +363,7 @@ if __name__ == '__main__':
                     batch_loss, batch_f, batch_reconstructed_activations, batch_mseloss, batch_l1loss = autoencoder(batch_mlp_activations)
                     
                 batch_f = batch_f.to('cpu') # (gpt_batch_size, block_size, n_features)
+                batch_token_indices = slice_fn(token_indices) # (gpt_batch_size, eval_tokens_per_context)
 
                 # restrict batch_f to a subset of eval_tokens_per_context tokens in each context; shape: (gpt_batch_size, eval_tokens_per_context, n_features)
                 batch_f_subset = torch.gather(batch_f, 1, batch_token_indices.unsqueeze(-1).expand(-1, -1, n_features))  
