@@ -171,15 +171,11 @@ if __name__ == '__main__':
 
         # select batch of mlp activations, residual stream and y 
         if device_type == 'cuda':
-            batch_contexts = slice_fn(X).pin_memory().to(device, non_blocking=True)
-            batch_targets = slice_fn(Y).pin_memory().to(device, non_blocking=True) 
-            batch_token_indices = slice_fn(token_indices).pin_memory().to(device, non_blocking=True) # (gpt_batch_size, eval_tokens_per_context)
+            # batch_targets = slice_fn(Y).pin_memory().to(device, non_blocking=True) 
             batch_mlp_activations = slice_fn(mlp_activations_storage).pin_memory().to(device, non_blocking=True) 
             # batch_res_stream = slice_fn(residual_stream_storage).pin_memory().to(device, non_blocking=True) 
         else:
-            batch_contexts = slice_fn(X).to(device)  # (gpt_batch_size, block_size)
-            batch_targets = slice_fn(Y).to(device) # (gpt_batch_size, block_size)
-            batch_token_indices = slice_fn(token_indices).to(device) # (gpt_batch_size, eval_tokens_per_context)
+            # batch_targets = slice_fn(Y).to(device) # (gpt_batch_size, block_size)
             batch_mlp_activations = slice_fn(mlp_activations_storage).to(device) # (gpt_batch_size, block_size, n_ffwd)
             # batch_res_stream = slice_fn(residual_stream_storage).to(device) # (gpt_batch_size, block_size, n_embd)
 
@@ -188,9 +184,10 @@ if __name__ == '__main__':
             batch_loss, batch_f, batch_reconstructed_activations, batch_mseloss, batch_l1loss = autoencoder(batch_mlp_activations)
         
         batch_f = batch_f.to('cpu') # (gpt_batch_size, block_size, n_features)
+        batch_token_indices = slice_fn(token_indices) # (gpt_batch_size, eval_tokens_per_context)
+        batch_contexts = slice_fn(X).to(device)
 
         # restrict batch_contexts and batch_f on the subset of tokens specified by batch_token_indices
-        # TODO: Do I need batch_contexts_subset?
         batch_contexts_subset = torch.gather(batch_contexts, 1, batch_token_indices) # (gpt_batch_size, eval_tokens_per_context)
         batch_f_subset = torch.gather(batch_f, 1, batch_token_indices.unsqueeze(-1).expand(-1, -1, n_features)) # (gpt_batch_size, eval_tokens_per_context, n_features)
 
