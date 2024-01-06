@@ -60,6 +60,18 @@ def top_activations_and_tokens(f_subset, token_indices, contexts, context_on_eac
 
     return top_values, top_tokens_with_contexts
 
+def special_decode(tokens):
+    assert len(tokens) % 2 == 1, "tokens must have odd length so that the middle token is unique"
+
+    left_context = decode(tokens[:len(tokens)//2])
+    mid_token = decode([tokens[len(tokens)//2]])
+    right_context = decode(tokens[len(tokens)//2 + 1:])
+
+    red_start = "\033[91m"
+    color_end = "\033[0m"
+    
+    return f"{left_context}{red_start}{mid_token}{color_end}{right_context}"
+
 if __name__ == '__main__':
 
     # -----------------------------------------------------------------------------
@@ -143,13 +155,13 @@ if __name__ == '__main__':
     num_eval_batches = eval_contexts // gpt_batch_size
     for iter in range(num_eval_batches):    
         
-        print(f'iter = {iter}/{num_eval_batches} in computation of mlp_acts and res_stream for eval data')
+        print(f'iter = {iter}/{num_eval_batches} in computation of mlp_acts for eval data')
 
         # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
         x = slice_fn(X).pin_memory().to(device, non_blocking=True) if device_type == 'cuda' else slice_fn(X).to(device)
         y = slice_fn(Y).pin_memory().to(device, non_blocking=True) if device_type == 'cuda' else slice_fn(Y).to(device)
 
-        res_stream, mlp_activations, batch_loss, batch_ablated_loss = gpt.forward_with_and_without_mlp(x, y)    
+        _, mlp_activations, batch_loss, batch_ablated_loss = gpt.forward_with_and_without_mlp(x, y)    
         mlp_activations_storage = torch.cat([mlp_activations_storage, mlp_activations.to(dtype=torch.float16, device='cpu')])
         # residual_stream_storage = torch.cat([residual_stream_storage, res_stream.to(dtype=torch.float16, device='cpu')])
         # full_loss += batch_loss
@@ -197,7 +209,7 @@ if __name__ == '__main__':
         batch_top_values, batch_top_contexts = top_activations_and_tokens(batch_f_subset, batch_token_indices, batch_contexts, length_context_on_each_side, k)
         for feature in range(n_features):
             for top_index in range(k):
-                top_dict[feature].append((batch_top_values[top_index, feature].item(), decode(batch_top_contexts[top_index, feature].tolist())))
+                top_dict[feature].append((batch_top_values[top_index, feature].item(), special_decode(batch_top_contexts[top_index, feature].tolist())))
             #print(top_dict)
             top_dict[feature] = sorted(top_dict[feature], reverse=True)[:k] # keep only the top k values overall
 
