@@ -325,42 +325,6 @@ if __name__ == '__main__':
         
         del batch; gc.collect(); torch.cuda.empty_cache() 
 
-        # TODO: modify this code somehow to allow for neuron resampling more than 4 times and at step > 1e5 perhaps?
-        # or maybe just impose a condition that neurons are resampled only 4 times in total
-
-        ## neuron resampling
-        # start keeping track of dead neurons when step is an odd multiple of resampling_interval//2
-        if step % (resampling_interval) == resampling_interval//2 and step < 1e5:
-            dead_neurons = set([feature for feature in range(n_features)])
-            initial_step_for_neuron_tracking = step # the step at which we started tracking dead neurons 
-            
-        # remove any autoencoder neurons from dead_neurons that are active in this training step
-        if (resampling_interval//2) <= step < resampling_interval or (resampling_interval//2)*3 <= step < resampling_interval*2 \
-        or (resampling_interval//2)*5 <= step < resampling_interval*3 or (resampling_interval//2)*7 <= step < resampling_interval*4:   
-            # torch.count_nonzero(f, dim=0) counts the number of examples on which each feature is active
-            # torch.count_nonzero(f, dim=0).nonzero() gives indices of alive features, which we discard from the set dead_neurons
-            for feature_number in torch.count_nonzero(f, dim=0).nonzero().view(-1):
-                dead_neurons.discard(feature_number.item())
-
-            if step % 100 == 0:
-                print(f'At training step = {step}, there are {len(dead_neurons)} neurons that have not fired since training step = {initial_step_for_neuron_tracking}')
-
-
-        if (step + 1) % resampling_interval == 0 and step < 1e5:
-            # compute the loss of the current model on 100 batches
-            # choose a batch of data 
-            # TODO: pick a batch of data
-            #batch = sae_data_for_resampling_neurons[batch_start: ] 
-            if len(dead_neurons) > 0:           
-                temp_encoder_layer = nn.Linear(n_ffwd, n_features, device=device)
-                temp_decoder_layer = nn.Linear(n_features, n_ffwd, device=device)
-                with torch.no_grad():
-                    autoencoder.enc.weight[torch.tensor(list(dead_neurons))] = temp_encoder_layer.weight[torch.tensor(list(dead_neurons))]
-                    autoencoder.dec.weight[:, torch.tensor(list(dead_neurons))] = temp_decoder_layer.weight[:, torch.tensor(list(dead_neurons))]
-                del temp_encoder_layer, temp_decoder_layer; gc.collect(); torch.cuda.empty_cache()
-                print(f'resampled {len(dead_neurons)} neurons at training step = {step}')
-
-
 
         ## log info
         if step % eval_interval == 0:
@@ -460,6 +424,43 @@ if __name__ == '__main__':
                     }
             print(f"saving checkpoint to {out_dir}/{run_name} at training step = {step}")
             torch.save(checkpoint, os.path.join(out_dir, run_name, 'ckpt.pt'))
+
+        # TODO: modify this code somehow to allow for neuron resampling more than 4 times and at step > 1e5 perhaps?
+        # or maybe just impose a condition that neurons are resampled only 4 times in total
+
+        # TODO: neuron resampling should be a method of AutoEncoder and the code below should be simplified to 2-3 lines
+
+        ## neuron resampling
+        # start keeping track of dead neurons when step is an odd multiple of resampling_interval//2
+        if step % (resampling_interval) == resampling_interval//2 and step < 1e5:
+            dead_neurons = set([feature for feature in range(n_features)])
+            initial_step_for_neuron_tracking = step # the step at which we started tracking dead neurons 
+            
+        # remove any autoencoder neurons from dead_neurons that are active in this training step
+        if (resampling_interval//2) <= step < resampling_interval or (resampling_interval//2)*3 <= step < resampling_interval*2 \
+        or (resampling_interval//2)*5 <= step < resampling_interval*3 or (resampling_interval//2)*7 <= step < resampling_interval*4:   
+            # torch.count_nonzero(f, dim=0) counts the number of examples on which each feature is active
+            # torch.count_nonzero(f, dim=0).nonzero() gives indices of alive features, which we discard from the set dead_neurons
+            for feature_number in torch.count_nonzero(f, dim=0).nonzero().view(-1):
+                dead_neurons.discard(feature_number.item())
+
+            if step % 100 == 0:
+                print(f'At training step = {step}, there are {len(dead_neurons)} neurons that have not fired since training step = {initial_step_for_neuron_tracking}')
+
+
+        if (step + 1) % resampling_interval == 0 and step < 1e5:
+            # compute the loss of the current model on 100 batches
+            # choose a batch of data 
+            # TODO: pick a batch of data
+            #batch = sae_data_for_resampling_neurons[batch_start: ] 
+            if len(dead_neurons) > 0:           
+                temp_encoder_layer = nn.Linear(n_ffwd, n_features, device=device)
+                temp_decoder_layer = nn.Linear(n_features, n_ffwd, device=device)
+                with torch.no_grad():
+                    autoencoder.enc.weight[torch.tensor(list(dead_neurons))] = temp_encoder_layer.weight[torch.tensor(list(dead_neurons))]
+                    autoencoder.dec.weight[:, torch.tensor(list(dead_neurons))] = temp_decoder_layer.weight[:, torch.tensor(list(dead_neurons))]
+                del temp_encoder_layer, temp_decoder_layer; gc.collect(); torch.cuda.empty_cache()
+                print(f'resampled {len(dead_neurons)} neurons at training step = {step}')
 
     if wandb_log:
         wandb.finish()    
