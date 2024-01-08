@@ -2,7 +2,7 @@
 Train a Sparse AutoEncoder model
 
 Run on a macbook on a Shakespeare dataset as 
-python train_sae.py --dataset=shakespeare_char --gpt_dir=out-shakespeare-char --eval_contexts=1000 --batch_size=128 --device=cpu --eval_interval=100 --n_features=1024 --save_checkpoint=False
+python train_sae.py --dataset=shakespeare_char --gpt_dir=out-shakespeare-char --eval_contexts=1000 --eval_batch_size=16 --batch_size=128 --device=cpu --eval_interval=100 --n_features=1024 --save_checkpoint=False
 """
 import os
 import torch
@@ -25,49 +25,27 @@ gpt_dir = 'out' # TODO: this should be changed to 'out_gpt' for clarity; we migh
 wandb_log = True
 l1_coeff = 3e-3
 learning_rate = 3e-4
-gpt_batch_size = 16 # batch size for computing reconstruction nll 
 batch_size = 8192 # 8192 for owt
 n_features = 4096
 eval_contexts = 10000 # 10 million in anthropic paper; but we can choose 1 million as OWT dataset is smaller
-eval_tokens_per_context = 10 # same as anthropic paper
+tokens_per_eval_context = 10 # same as anthropic paper
 eval_interval = 1000 # number of training steps after which the autoencoder is evaluated
+eval_batch_size = 32 # numnber of contexts in each text batch when evaluating the autoencoder model
 save_checkpoint = True # whether to save model, optimizer, etc or not
 save_interval = 10000 # number of training steps after which a checkpoint will be saved
 out_dir = 'out_autoencoder' # directory containing trained autoencoder model weights # TODO: this name should be changed to autoencoder_dir for clarity 
 # and to be consistent with top_activations.py
 resampling_interval = 25000 # number of training steps after which neuron resampling will be performed
 
-# TODO: change eval_tokens_per_context to tokens_per_eval_context for more clarity
-
 # TODO: Do I need to specify subsets of tokens in neuron resampling? As it is, I don't think I have done that in data_for_resampling.py
 
-# TODO: subsets_of_tokens_locations should probably just be called token_indices
-
-# TODO: Fix my training loops by including training on the last few examples with count < batch_size
-# As it is, I am ignoring them
-
-# TODO: replace gc.collect(); torch.cuda.empty_cache() by using a context manager of the form ManagedMemory 
-# with an exit method that executes deletions and gc.collect(), torch.cuda_empty_cache. 
-# This will clean up the code
+# TODO: Fix my training loops by including training on the last few examples with count < batch_size. As it is, I am ignoring them
 
 # TODO: compile your gpt model and sae model for faster training?
 
-# TODO: Priority list:
-# Save and load the model
-# implement neuron resampling
-# manual inspection
+# TODO: It seems that gpu memory is not being fully utilized so maybe I can increase eval_batch_size. log gpu metrics more closely 
 
-# TODO: It seems that gpu memory is not being fully utilized so maybe I can increase gpt_batch_size. 
-
-# TODO: In recent experiments, feature activation sparsity starts off from infinity and decays fast to ~0. What's going on?
-
-# TODO: how are neural networks initialized 
-
-# TODO: log crude measures like count of neurons with feaeture density < 1e-4 and < 1e-5.
-
-# TODO: I dont like the name gpt_batch_size. Change that. 
-
-# TODO: log gpu metrics more closely 
+# TODO: log crude measures like count of neurons with feaeture density < 1e-4 and < 1e-5. 
 
 # TODO: whats the intuition behind the nll score?
 
@@ -77,22 +55,23 @@ resampling_interval = 25000 # number of training steps after which neuron resamp
 class AutoEncoder(nn.Module):
     def __init__(self, n, m, lam=0.003):
         # for us, n = d_MLP (a.k.a. n_ffwd) and m = number of features
-        # TODO: look at the initialization of this neural network
         super().__init__()
         self.enc = nn.Linear(n, m)
         self.relu = nn.ReLU()
         self.dec = nn.Linear(m, n)
         self.lam = lam # coefficient of L_1 loss
 
-    def forward(self, acts):
+
+    def forward(self, x):
         # acts is of shape (b, n) where b = batch_size, n = d_MLP
-        x = acts - self.dec.bias # (b, n)
-        f = self.relu(self.enc(x)) # (b, m)
+        xbar = x - self.dec.bias # (b, n)
+        f = self.relu(self.enc(xbar)) # (b, m)
         reconst_acts = self.dec(f) # (b, n)
-        mseloss = F.mse_loss(reconst_acts, acts) # scalar
+        mseloss = F.mse_loss(reconst_acts, x) # scalar
         l1loss = F.l1_loss(f, torch.zeros(f.shape, device=f.device), reduction='sum') # scalar
         loss = mseloss + self.lam * l1loss # scalar
-        return loss, f, reconst_acts, mseloss, l1loss
+        out_dict = {'loss': loss, 'f': f, 'reconst_acts': reconst_acts, 'mse_loss': mseloss, 'l1_loss': l1loss}
+        return loss if self.training else out_dict 
     
     @torch.no_grad()
     def normalize_decoder_columns(self):
@@ -134,7 +113,7 @@ def get_histogram_image(data, bins='auto'):
     return Image.open(buf)
 
 # a helper lambda to slice a torch tensor
-slice_fn = lambda storage: storage[iter * gpt_batch_size: (iter + 1) * gpt_batch_size]
+slice_fn = lambda storage: storage[iter * eval_batch_size: (iter + 1) * eval_batch_size]
 
 def load_data(step, batch_size, current_partition_index, current_partition, n_parts, examples_per_part, offset):
     
@@ -155,34 +134,9 @@ def load_data(step, batch_size, current_partition_index, current_partition, n_pa
         # Normal batch processing
         batch = current_partition[batch_start:batch_end].to(torch.float32)
     
-    assert len(batch) == batch_size, f"length of batch = {len(batch)} at step = {step} and partition number = {current_partition_index } is not correct"
+    assert len(batch) == batch_size, f"length of batch = {len(batch)} at step = {step} and partition number = {current_partition_index} is not correct"
     
-    return batch, current_partition_index, current_partition, offset
-
-
-def top_activations_and_tokens(f_subset, token_indices, contexts, context_on_each_side, k):
-    """input: f_subset of shape (gpt_batch_size, eval_tokens_per_context, n_features)
-              token_indices of shape  (gpt_batch_size, eval_tokens_per_context))
-              contexts of shape (gpt_batch_size, block_size)
-              context_on_each_side: an int, must satisfy (2 * context_on_each_side + 1) < block_size
-              k: an int, the number of top activation values to compute and return, must be < gpt_batch_size * eval_tokens_per_context
-    returns: 
-              top_values: a tensor of shape (k, n_features)
-              top_tokens_with_context: a tensor of shape (k, n_features, 2 * context_on_each_side + 1)"""
-
-    #assert f.shape etc
-    #assert token_indices.shape etc
-    flattened_f = f_subset.view(-1, f_subset.shape[-1]) # (m * n, p)
-    top_values, flattened_indices = torch.topk(flattened_f, k=k, dim=0) # (k, p) 
-    unflattened_indices = torch.stack([flattened_indices // f_subset.shape[1], flattened_indices % f_subset.shape[1]], dim=2) # (k, p, 2)
-
-    # new_indices contain locations of tokens with highest feature activations in the original contexts
-    indices = unflattened_indices.clone()
-    indices[:, :, 1] = token_indices[unflattened_indices[:, :, 0], unflattened_indices[:, :, 1]]
-
-    top_tokens_with_contexts = torch.stack([contexts[indices[:, :, 0], indices[:, :, 1]+i] for i in range(-context_on_each_side, context_on_each_side + 1)], dim=2)
-
-    return top_values, top_tokens_with_contexts
+    return batch, current_partition, current_partition_index, offset
 
 
 if __name__ == '__main__':
@@ -195,7 +149,7 @@ if __name__ == '__main__':
 
     # variables that depend on input parameters
     config['device_type'] = device_type = 'cuda' if 'cuda' in device else 'cpu'
-    config['eval_tokens'] = eval_tokens = eval_contexts * eval_tokens_per_context
+    config['eval_tokens'] = eval_tokens = eval_contexts * tokens_per_eval_context
         
     torch.manual_seed(seed)
 
@@ -245,8 +199,8 @@ if __name__ == '__main__':
 
     ## Get text data for evaluation 
     X, Y = get_text_batch(text_data, block_size=block_size, batch_size=eval_contexts) # (eval_contexts, block_size) 
-    # in each context, randomly select eval_tokens_per_context (=10 in Anthropic's paper) where 
-    token_indices = torch.randint(block_size, (eval_contexts, eval_tokens_per_context)) # (eval_contexts, tokens_per_eval_context)
+    # in each context, randomly select tokens_per_eval_context (=10 in Anthropic's paper) where 
+    token_indices = torch.randint(block_size, (eval_contexts, tokens_per_eval_context)) # (eval_contexts, tokens_per_eval_context)
     # Note: for eval_contexts=1 million it will take 15.6GB of CPU MEMORY --- 7.81GB each for x and y
     # perhaps we will have to go one order of magnitude lower; use 0.1million contexts
     memory = psutil.virtual_memory()
@@ -257,7 +211,7 @@ if __name__ == '__main__':
     mlp_activations_storage = torch.tensor([], dtype=torch.float16)
     residual_stream_storage = torch.tensor([], dtype=torch.float16)
     full_loss, mlp_ablated_loss = 0, 0
-    num_eval_batches = eval_contexts // gpt_batch_size
+    num_eval_batches = eval_contexts // eval_batch_size
     for iter in range(num_eval_batches):    
         
         print(f'iter = {iter}/{num_eval_batches} in computation of mlp_acts and res_stream for eval data')
@@ -282,13 +236,8 @@ if __name__ == '__main__':
 
     ## initiate the autoencoder and optimizer
     autoencoder = AutoEncoder(n_ffwd, n_features, lam=l1_coeff).to(device)
+    autoencoder.normalize_decoder_columns() # normalize decoder columns; TODO: I think this should be investigated a bit more
     optimizer = torch.optim.Adam(autoencoder.parameters(), lr=learning_rate) 
-
-    # normalize the decoder weights; TODO: this is on trial basis for now
-    # TODO: when you do this, do you change the distribution from which the weights are drawn?
-    # Perhaps computing weight.mean() and weight.std() will be useful. 
-    # inituitively, normalization should not change mean but it could change std
-    autoencoder.normalize_decoder_columns()
     
     ## WANDB LOG
     run_name = f'{time.time():.2f}-autoencoder-{dataset}'
@@ -305,12 +254,12 @@ if __name__ == '__main__':
     for step in range(total_steps):
  
         ## load a batch of data        
-        batch, current_partition_index, current_partition, offset = load_data(step, batch_size, current_partition_index, current_partition, n_parts, examples_per_part, offset)
+        batch, current_partition, current_partition_index, offset = load_data(step, batch_size, current_partition_index, current_partition, n_parts, examples_per_part, offset)
         batch = batch.pin_memory().to(device, non_blocking=True) if device_type == 'cuda' else batch.to(device)
         
         # forward, backward pass
         optimizer.zero_grad(set_to_none=True) 
-        loss, f, _, _, _ = autoencoder(batch) # f has shape (batch_size, n_features)
+        loss = autoencoder(batch) # f has shape (batch_size, n_features)
         loss.backward()
 
         # remove component of gradient parallel to weight # TODO: I am still not convinced this is the best approach
@@ -323,34 +272,22 @@ if __name__ == '__main__':
         if step % 1000 == 0: 
             autoencoder.normalize_decoder_columns()
         
-        del batch; gc.collect(); torch.cuda.empty_cache() 
+        del batch; gc.collect(); torch.cuda.empty_cache() # free up memory
 
 
         ## log info
-        if step % eval_interval == 0:
+        if (step % eval_interval == 0) or step == total_steps - 1:
             
-            start_logging_time = time.time()
-
+            autoencoder.eval()
+            
             log_dict = {'losses/reconstructed_nll': 0, 'losses/autoencoder_loss': 0, 'losses/mse_loss': 0, 'losses/l1_loss': 0, 
                         'losses/feature_activation_sparsity': 0}
-            feature_activation_counts = torch.zeros(n_features, dtype=torch.float32) # initiate with zeros
+            feature_activation_counts = torch.zeros(n_features, dtype=torch.float32) # number of tokens on which each feature is active
 
-            # key: feature number; val: list of tuples (top activation value, corresponding token) 
-            tokens_with_top_feature_activations = {i: [] for i in range(n_features)}
-
-            # SIMPLEST LOGIC:
-            # in batch_f_on_subset_of_tokens, find 10 values of (context, eval_token_in_context, activation_value) for each feature
-            # use context, eval_token_in_context, batch_targets and subset_of_tokens to find the token id that gave the highest activation value
-            # add (top_activation_value, token) to the list for each feature in the dictionary above
-            # sort each list and keep only top 10 values
-            # 
-
-            # perhaps later I can find a faster solution later but this should work in the first go. 
+            start_log_time = time.time()
 
             for iter in range(num_eval_batches):
-
-                # select batch of mlp activations, residual stream and y 
-                if device_type == 'cuda':
+                if device_type == 'cuda': # select batch of mlp activations, residual stream and y 
                     batch_mlp_activations = slice_fn(mlp_activations_storage).pin_memory().to(device, non_blocking=True) 
                     batch_res_stream = slice_fn(residual_stream_storage).pin_memory().to(device, non_blocking=True) 
                     batch_targets = slice_fn(Y).pin_memory().to(device, non_blocking=True) 
@@ -360,28 +297,29 @@ if __name__ == '__main__':
                     batch_targets = slice_fn(Y).to(device)
                 
                 with torch.no_grad():
-                    batch_loss, batch_f, batch_reconstructed_activations, batch_mseloss, batch_l1loss = autoencoder(batch_mlp_activations)
-                    
-                batch_f = batch_f.to('cpu') # (gpt_batch_size, block_size, n_features)
-                batch_token_indices = slice_fn(token_indices) # (gpt_batch_size, eval_tokens_per_context)
+                    output = autoencoder(batch_mlp_activations) # {'loss': loss, 'f': f, 'reconst_acts': reconst_acts, 'mseloss': mseloss, 'l1loss': l1loss}
 
-                # restrict batch_f to a subset of eval_tokens_per_context tokens in each context; shape: (gpt_batch_size, eval_tokens_per_context, n_features)
-                batch_f_subset = torch.gather(batch_f, 1, batch_token_indices.unsqueeze(-1).expand(-1, -1, n_features))  
+                    
+                f = output['f'].to('cpu') # (eval_batch_size, block_size, n_features)
+                batch_token_indices = slice_fn(token_indices) # (eval_batch_size, tokens_per_eval_context)
+
+                # restrict batch_f to the subset of tokens_per_eval_context tokens; shape: (eval_batch_size, tokens_per_eval_context, n_features)
+                f_subset = torch.gather(f, 1, batch_token_indices.unsqueeze(-1).expand(-1, -1, n_features))  
 
                 # for each feature, calculate the TOTAL number of tokens on which it is active; shape: (n_features, ) 
-                feature_activation_counts += torch.count_nonzero(batch_f_subset, dim=[0, 1]) # (n_features, )
+                feature_activation_counts += torch.count_nonzero(f_subset, dim=[0, 1]) # (n_features, )
 
                 # calculat the AVERAGE number of non-zero entries in each feature vector
-                log_dict['losses/feature_activation_sparsity'] += torch.mean(torch.count_nonzero(batch_f_subset, dim=-1), dtype=torch.float32)
+                log_dict['losses/feature_activation_sparsity'] += torch.mean(torch.count_nonzero(f_subset, dim=-1), dtype=torch.float32)
  
-                del batch_mlp_activations, batch_f, batch_f_subset; gc.collect(); torch.cuda.empty_cache()
+                del batch_mlp_activations, f, f_subset; gc.collect(); torch.cuda.empty_cache()
 
                 # Compute reconstructed loss from batch_reconstructed_activations
-                log_dict['losses/reconstructed_nll'] += gpt.loss_from_mlp_acts(batch_res_stream, batch_reconstructed_activations, batch_targets)
-                log_dict['losses/autoencoder_loss'] += batch_loss 
-                log_dict['losses/mse_loss'] += batch_mseloss
-                log_dict['losses/l1_loss'] += batch_l1loss
-                del batch_res_stream, batch_reconstructed_activations, batch_targets; gc.collect(); torch.cuda.empty_cache()
+                log_dict['losses/reconstructed_nll'] += gpt.loss_from_mlp_acts(batch_res_stream, output['reconst_acts'], batch_targets)
+                log_dict['losses/autoencoder_loss'] += output['loss'] 
+                log_dict['losses/mse_loss'] += output['mse_loss']
+                log_dict['losses/l1_loss'] += output['l1_loss']
+                del batch_res_stream, output, batch_targets; gc.collect(); torch.cuda.empty_cache()
 
             # take mean of all loss values by dividing by number of evaluation batches
             log_dict = {key: val/num_eval_batches for key, val in log_dict.items()}
@@ -392,7 +330,7 @@ if __name__ == '__main__':
             # compute feature density and plot a histogram
             log_feature_activation_density = np.log10(feature_activation_counts[feature_activation_counts != 0]/(eval_tokens)) # (n_features,)
             feature_density_histogram = get_histogram_image(log_feature_activation_density)
-            print(f"batch: {step}/{total_steps}, time per step: {(time.time()-start_time)/(step+1):.2f}, logging time = {(time.time()-start_logging_time):.2f}")
+            print(f"batch: {step}/{total_steps}, time per step: {(time.time()-start_time)/(step+1):.2f}, logging time = {(time.time()-start_log_time):.2f}")
 
             # log more metrics
             log_dict.update(
@@ -410,10 +348,11 @@ if __name__ == '__main__':
 
             if wandb_log:
                 wandb.log(log_dict)
+
+            autoencoder.train()
                 
-            # save a checkpoint 
-            # TODO: perhaps I should save a checkpoint BEFORE resampling neurons
-        if step > 0 and (step % save_interval == 0 or step == total_steps - 1) and save_checkpoint:
+        # save a checkpoint 
+        if save_checkpoint and step > 0 and (step % save_interval == 0 or step == total_steps - 1):
             checkpoint = {
                     'autoencoder': autoencoder.state_dict(),
                     'optimizer': optimizer.state_dict(),
