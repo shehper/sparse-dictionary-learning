@@ -22,7 +22,7 @@ dataset = 'openwebtext'
 gpt_dir = 'out' 
 gpt_batch_size = 16 # batch size for computing reconstruction nll 
 eval_contexts = 10000 # 10 million in anthropic paper; but we can choose 1 million as OWT dataset is smaller
-eval_tokens_per_context = 10 # same as anthropic paper
+tokens_per_eval_context = 10 # same as anthropic paper
 autoencoder_dir = 'out_autoencoder' # directory containing weights of various trained autoencoder models
 autoencoder_subdir = '' # subdirectory containing the specific model to consider
 length_context_on_each_side = 4 # number of tokens to print/save on either side of the token with top feature activation
@@ -32,21 +32,21 @@ slice_fn = lambda storage: storage[iter * gpt_batch_size: (iter + 1) * gpt_batch
 
 def top_activations_and_tokens(f_subset, token_indices, contexts, context_on_each_side, k):
     """ computes top feature activations for each feature and the corresponding tokens (with context around them)
-    input: f_subset of shape (gpt_batch_size, eval_tokens_per_context, n_features)
-              token_indices of shape  (gpt_batch_size, eval_tokens_per_context))
+    input: f_subset of shape (gpt_batch_size, tokens_per_eval_context, n_features)
+              token_indices of shape  (gpt_batch_size, tokens_per_eval_context))
               contexts of shape (gpt_batch_size, block_size)
               context_on_each_side: an int, must satisfy (2 * context_on_each_side + 1) < block_size
-              k: an int, the number of top activation values to compute and return, must be < gpt_batch_size * eval_tokens_per_context
+              k: an int, the number of top activation values to compute and return, must be < gpt_batch_size * tokens_per_eval_context
     returns: 
               top_values: a tensor of shape (k, n_features)
               top_tokens_with_context: a tensor of shape (k, n_features, 2 * context_on_each_side + 1)
               """
 
-    assert f_subset.shape == (gpt_batch_size, eval_tokens_per_context, n_features)
-    assert token_indices.shape == (gpt_batch_size, eval_tokens_per_context)
+    assert f_subset.shape == (gpt_batch_size, tokens_per_eval_context, n_features)
+    assert token_indices.shape == (gpt_batch_size, tokens_per_eval_context)
     assert contexts.shape == (gpt_batch_size, block_size)
     assert (2 * context_on_each_side + 1) < block_size, "this code will give errors if length_context_on_each_side is too long compared to block_size"
-    assert k < gpt_batch_size * eval_tokens_per_context, "number of top values to choose cannot be bigger than the number of tokens in each batch"
+    assert k < gpt_batch_size * tokens_per_eval_context, "number of top values to choose cannot be bigger than the number of tokens in each batch"
 
     flattened_f = f_subset.view(-1, f_subset.shape[-1]) # (m * n, p)
     top_values, flattened_indices = torch.topk(flattened_f, k=k, dim=0) # (k, p) 
@@ -169,7 +169,7 @@ if __name__ == '__main__':
 
     # full_loss, mlp_ablated_loss = full_loss/num_eval_batches, mlp_ablated_loss/num_eval_batches
 
-    token_indices = torch.randint(length_context_on_each_side, block_size - length_context_on_each_side, (eval_contexts, eval_tokens_per_context)) # (eval_contexts, tokens_per_eval_context)
+    token_indices = torch.randint(length_context_on_each_side, block_size - length_context_on_each_side, (eval_contexts, tokens_per_eval_context)) # (eval_contexts, tokens_per_eval_context)
     # TODO: This assumes that the tokens chosen for studying top activations are not on the extreme ends of any text in the context window of gpt
     # Can the generality we lose this way significantly affect our analysis? Put another way, could there be some interesting behavior on the edges of the context window?
 
@@ -196,12 +196,12 @@ if __name__ == '__main__':
             batch_loss, batch_f, batch_reconstructed_activations, batch_mseloss, batch_l1loss = autoencoder(batch_mlp_activations)
         
         batch_f = batch_f.to('cpu') # (gpt_batch_size, block_size, n_features)
-        batch_token_indices = slice_fn(token_indices) # (gpt_batch_size, eval_tokens_per_context)
+        batch_token_indices = slice_fn(token_indices) # (gpt_batch_size, tokens_per_eval_context)
         batch_contexts = slice_fn(X)
 
         # restrict batch_contexts and batch_f on the subset of tokens specified by batch_token_indices
-        batch_contexts_subset = torch.gather(batch_contexts, 1, batch_token_indices) # (gpt_batch_size, eval_tokens_per_context)
-        batch_f_subset = torch.gather(batch_f, 1, batch_token_indices.unsqueeze(-1).expand(-1, -1, n_features)) # (gpt_batch_size, eval_tokens_per_context, n_features)
+        batch_contexts_subset = torch.gather(batch_contexts, 1, batch_token_indices) # (gpt_batch_size, tokens_per_eval_context)
+        batch_f_subset = torch.gather(batch_f, 1, batch_token_indices.unsqueeze(-1).expand(-1, -1, n_features)) # (gpt_batch_size, tokens_per_eval_context, n_features)
 
         # for each feature, calculate the TOTAL number of tokens on which it is active; shape: (n_features, ) 
         # feature_activation_counts += torch.count_nonzero(batch_f_subset, dim=[0, 1]) # (n_features, )
