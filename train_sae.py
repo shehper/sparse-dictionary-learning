@@ -21,7 +21,7 @@ import gc
 device = 'cuda'
 seed = 1442
 dataset = 'openwebtext'
-gpt_dir = 'out' # TODO: this should be changed to 'out_gpt' for clarity; we might also have to make this change in train_gpt.py/train.py
+gpt_dir = 'out' # TODO: this should be changed from 'out' to 'out_gpt' or 'gpt/out' for clarity; a similar change should be made in train_gpt.py/train.py
 wandb_log = True
 l1_coeff = 3e-3
 learning_rate = 3e-4
@@ -30,7 +30,7 @@ n_features = 4096
 eval_contexts = 10000 # 10 million in anthropic paper; but we can choose 1 million as OWT dataset is smaller
 tokens_per_eval_context = 10 # same as anthropic paper
 eval_interval = 1000 # number of training steps after which the autoencoder is evaluated
-eval_batch_size = 32 # numnber of contexts in each text batch when evaluating the autoencoder model
+eval_batch_size = 16 # numnber of contexts in each text batch when evaluating the autoencoder model
 save_checkpoint = True # whether to save model, optimizer, etc or not
 save_interval = 10000 # number of training steps after which a checkpoint will be saved
 out_dir = 'out_autoencoder' # directory containing trained autoencoder model weights # TODO: this name should be changed to autoencoder_dir for clarity 
@@ -38,17 +38,11 @@ out_dir = 'out_autoencoder' # directory containing trained autoencoder model wei
 resampling_interval = 25000 # number of training steps after which neuron resampling will be performed
 
 # TODO: Do I need to specify subsets of tokens in neuron resampling? As it is, I don't think I have done that in data_for_resampling.py
-
 # TODO: Fix my training loops by including training on the last few examples with count < batch_size. As it is, I am ignoring them
-
 # TODO: compile your gpt model and sae model for faster training?
-
 # TODO: It seems that gpu memory is not being fully utilized so maybe I can increase eval_batch_size. log gpu metrics more closely 
-
 # TODO: log crude measures like count of neurons with feaeture density < 1e-4 and < 1e-5. 
-
 # TODO: whats the intuition behind the nll score?
-
 # TODO: Should I move the AutoEncoder class and all these helper functions to a different file?
 
 ## Define Autoencoder class, 
@@ -63,7 +57,7 @@ class AutoEncoder(nn.Module):
 
 
     def forward(self, x):
-        # acts is of shape (b, n) where b = batch_size, n = d_MLP
+        # x is of shape (b, n) where b = batch_size, n = d_MLP
         xbar = x - self.dec.bias # (b, n)
         f = self.relu(self.enc(xbar)) # (b, m)
         reconst_acts = self.dec(f) # (b, n)
@@ -75,6 +69,7 @@ class AutoEncoder(nn.Module):
     
     @torch.no_grad()
     def normalize_decoder_columns(self):
+        # TODO: shouldnt these be called self instead of autoencoder?
         autoencoder.dec.weight.data = F.normalize(autoencoder.dec.weight.data, dim=0)
 
     def remove_parallel_component_of_decoder_gradient(self):
@@ -82,11 +77,61 @@ class AutoEncoder(nn.Module):
         # to do so, compute projection of gradient onto weight
         # recall projection of a onto b is proj_b a = (a.\hat{b}) \hat{b}
         # here, a = grad, b = weight
-        # TODO: check again that this function is correct, also rewrite it if it can be written in a simpler way
         unit_w = F.normalize(autoencoder.dec.weight, dim=0) # \hat{b}
         proj = torch.sum(autoencoder.dec.weight.grad * unit_w, dim=0) * unit_w 
         autoencoder.dec.weight.grad = autoencoder.dec.weight.grad - proj
 
+
+
+    @torch.no_grad()
+    def resample_neurons(self, data, optimizer):
+        
+        self.dead_neurons = set([2, 1]) # TODO: remove this after self.dead_neurons has been computed in forward method
+        dead_neurons_t = torch.tensor(list(self.dead_neurons))
+        alive_neurons = torch.tensor([i for i in range(self.m) if i not in self.dead_neurons])
+        print(f'alive_neurons are {list(alive_neurons)}') # should be torch.tensor([2, 3])
+
+        # compute average norm of encoder vectors for alive neurons
+        average_enc_norm = torch.mean(torch.linalg.vector_norm(self.enc.weight[alive_neurons], dim=1))
+        print(f'average encoder norm is {average_enc_norm}')
+        
+        # expect data to be of shape (N, n_ffwd); in the paper N = 819200
+        batch_size = 8192 # TODO: I can probably remove this when copied to train_sae.py
+        num_batches = len(data) // batch_size + (len(data) % batch_size != 0)
+        probs = torch.zeros(len(data),) # (N, ) # initiate a tensor of probs = losses**2
+        for iter in range(num_batches): 
+            print(f'computing losses for iter = {iter}')
+            x = data[iter * batch_size: (iter + 1) * batch_size].to(device) # (b, n) where b = min(batch_size, remaining examples in data), n = d_MLP
+            xbar = x - self.dec.bias # (b, n)
+            f = self.relu(self.enc(xbar)) # (b, m)
+            reconst_acts = self.dec(f) # (b, n)
+            mselosses = torch.sum(F.mse_loss(reconst_acts, x, reduction='none'), dim=1) # (b,)
+            l1losses = torch.sum(F.l1_loss(f, torch.zeros(f.shape, device=f.device), reduction='none'), dim=1) # (b, )
+            probs[iter * batch_size: (iter + 1) * batch_size] = ((mselosses + self.lam * l1losses)**2).to('cpu') # (b, )
+
+
+        torch.manual_seed(0) # TODO: remove this later perhaps
+        exs = data[torch.multinomial(probs, num_samples=len(self.dead_neurons))] # (d, n) where d = len(dead_neurons)
+        assert exs.shape == (len(self.dead_neurons), self.n), 'exs has incorrect shape'
+        
+        exs_unit_norm = F.normalize(exs, dim=1) # (d, n)
+
+        self.dec.weight[:, dead_neurons_t] = torch.transpose(exs_unit_norm, 0, 1) # (n, d)
+
+        exs_enc_norm = exs_unit_norm * average_enc_norm * 0.2
+
+        self.enc.weight[dead_neurons_t] = exs_enc_norm
+
+        self.enc.bias[dead_neurons_t] = 0
+
+        for i, p in enumerate(optimizer.param_groups[0]['params']): # there is only one parameter group so we can do this
+            param_state = optimizer.state[p]
+            if i in [0, 1]: # encoder weight and bias
+                param_state['exp_avg'][dead_neurons_t] = 0
+                param_state['exp_avg_sq'][dead_neurons_t] = 0
+            elif i == 2: # decoder weight
+                param_state['exp_avg'][:, dead_neurons_t] = 0
+                param_state['exp_avg_sq'][:, dead_neurons_t] = 0
 
 # a slightly modified version of nanoGPT get_batch function to get a batch of text data
 def get_text_batch(data, block_size, batch_size):
@@ -103,14 +148,11 @@ def get_histogram_image(data, bins='auto'):
     ax.hist(data, bins=bins)
     ax.set_title('histogram')
 
-    # save the plot to a buffer
-    buf = io.BytesIO()
+    buf = io.BytesIO() # save the plot to a buffer
     plt.savefig(buf, format='png')
     buf.seek(0)
     plt.close()
-
-    # convert buffer to a PIL Image and return
-    return Image.open(buf)
+    return Image.open(buf) # convert buffer to a PIL Image and return
 
 # a helper lambda to slice a torch tensor
 slice_fn = lambda storage: storage[iter * eval_batch_size: (iter + 1) * eval_batch_size]
@@ -196,6 +238,11 @@ if __name__ == '__main__':
     memory = psutil.virtual_memory()
     print(f'loaded data or resampling neurons, available memory now: {memory.available / (1024**3):.2f} GB; memory usage: {memory.percent}%')
 
+    print(type(sae_data_for_resampling_neurons))
+    print(sae_data_for_resampling_neurons.shape)
+    print(sae_data_for_resampling_neurons[:10])
+    raise
+
 
     ## Get text data for evaluation 
     X, Y = get_text_batch(text_data, block_size=block_size, batch_size=eval_contexts) # (eval_contexts, block_size) 
@@ -238,6 +285,9 @@ if __name__ == '__main__':
     autoencoder = AutoEncoder(n_ffwd, n_features, lam=l1_coeff).to(device)
     autoencoder.normalize_decoder_columns() # normalize decoder columns; TODO: I think this should be investigated a bit more
     optimizer = torch.optim.Adam(autoencoder.parameters(), lr=learning_rate) 
+
+    print(autoencoder.dec.weight.shape)
+    raise
     
     ## WANDB LOG
     run_name = f'{time.time():.2f}-autoencoder-{dataset}'
@@ -274,19 +324,16 @@ if __name__ == '__main__':
         
         del batch; gc.collect(); torch.cuda.empty_cache() # free up memory
 
-
         ## log info
         if (step % eval_interval == 0) or step == total_steps - 1:
-            
-            autoencoder.eval()
-            
+            autoencoder.eval() 
             log_dict = {'losses/reconstructed_nll': 0, 'losses/autoencoder_loss': 0, 'losses/mse_loss': 0, 'losses/l1_loss': 0, 
                         'losses/feature_activation_sparsity': 0}
             feature_activation_counts = torch.zeros(n_features, dtype=torch.float32) # number of tokens on which each feature is active
-
             start_log_time = time.time()
 
             for iter in range(num_eval_batches):
+
                 if device_type == 'cuda': # select batch of mlp activations, residual stream and y 
                     batch_mlp_activations = slice_fn(mlp_activations_storage).pin_memory().to(device, non_blocking=True) 
                     batch_res_stream = slice_fn(residual_stream_storage).pin_memory().to(device, non_blocking=True) 
@@ -295,11 +342,10 @@ if __name__ == '__main__':
                     batch_mlp_activations = slice_fn(mlp_activations_storage).to(device)
                     batch_res_stream = slice_fn(residual_stream_storage).to(device)
                     batch_targets = slice_fn(Y).to(device)
-                
+
                 with torch.no_grad():
                     output = autoencoder(batch_mlp_activations) # {'loss': loss, 'f': f, 'reconst_acts': reconst_acts, 'mseloss': mseloss, 'l1loss': l1loss}
-
-                    
+      
                 f = output['f'].to('cpu') # (eval_batch_size, block_size, n_features)
                 batch_token_indices = slice_fn(token_indices) # (eval_batch_size, tokens_per_eval_context)
 
