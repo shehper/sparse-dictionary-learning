@@ -148,7 +148,7 @@ class AutoEncoder(nn.Module):
         exs = data[torch.multinomial(probs, num_samples=len(self.dead_neurons))].to(dtype=torch.float32) # (d, n) where d = len(dead_neurons)
         assert exs.shape == (len(self.dead_neurons), self.n), 'exs has incorrect shape'
         # normalize examples to have unit norm
-        exs_unit_norm = F.normalize(exs, dim=1) # (d, n)
+        exs_unit_norm = F.normalize(exs, dim=1).to(device) # (d, n)
         # reset decoder columns corresponding to dead neurons
         self.dec.weight[:, dead_neurons_t] = torch.transpose(exs_unit_norm, 0, 1) # (n, d)
         # renormalize examples to have norm = average_enc_norm * 0.2
@@ -403,28 +403,28 @@ if __name__ == '__main__':
                 feature_activation_counts += torch.count_nonzero(f_subset, dim=[0, 1]) # (n_features, )
 
                 # calculat the AVERAGE number of non-zero entries in each feature vector
-                log_dict['losses/feature_activation_sparsity'] += torch.mean(torch.count_nonzero(f_subset, dim=-1), dtype=torch.float32)
+                log_dict['losses/feature_activation_sparsity'] += torch.mean(torch.count_nonzero(f_subset, dim=-1), dtype=torch.float32).item()
  
                 del batch_mlp_activations, f, f_subset; gc.collect(); torch.cuda.empty_cache()
 
                 # Compute reconstructed loss from batch_reconstructed_activations
-                log_dict['losses/reconstructed_nll'] += gpt.loss_from_mlp_acts(batch_res_stream, output['reconst_acts'], batch_targets)
-                log_dict['losses/autoencoder_loss'] += output['loss'] 
-                log_dict['losses/mse_loss'] += output['mse_loss']
-                log_dict['losses/l1_loss'] += output['l1_loss']
+                log_dict['losses/reconstructed_nll'] += gpt.loss_from_mlp_acts(batch_res_stream, output['reconst_acts'], batch_targets).item()
+                log_dict['losses/autoencoder_loss'] += output['loss'].item() 
+                log_dict['losses/mse_loss'] += output['mse_loss'].item()
+                log_dict['losses/l1_loss'] += output['l1_loss'].item()
                 del batch_res_stream, output, batch_targets; gc.collect(); torch.cuda.empty_cache()
 
             # take mean of all loss values by dividing by number of evaluation batches
             log_dict = {key: val/num_eval_batches for key, val in log_dict.items()}
 
             # add nll score to log_dict
-            log_dict['losses/nll_score'] = (full_loss - log_dict['losses/reconstructed_nll'])/(full_loss - mlp_ablated_loss)
+            log_dict['losses/nll_score'] = (full_loss - log_dict['losses/reconstructed_nll'])/(full_loss - mlp_ablated_loss).item()
             
             # compute feature density and plot a histogram
             log_feature_activation_density = np.log10(feature_activation_counts[feature_activation_counts != 0]/(eval_tokens)) # (n_features,)
             feature_density_histogram = get_histogram_image(log_feature_activation_density)
             print(f"batch: {step}/{total_steps}, time per step: {(time.time()-start_time)/(step+1):.2f}, logging time = {(time.time()-start_log_time):.2f}")
-            print(log_dict)
+            # print(log_dict)
 
             # log more metrics
             if wandb_log:
