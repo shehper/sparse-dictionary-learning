@@ -187,9 +187,9 @@ if __name__ == '__main__':
             batch_mlp_activations = slice_fn(mlp_activations_storage).to(device) # (eval_batch_size, block_size, n_ffwd)
 
         with torch.no_grad():
-            batch_loss, batch_f, batch_reconstructed_activations, batch_mseloss, batch_l1loss = autoencoder(batch_mlp_activations)
+            output = autoencoder(batch_mlp_activations)
         
-        batch_f = batch_f.to('cpu') # (eval_batch_size, block_size, n_features)
+        batch_f = output['f'].to('cpu') # (eval_batch_size, block_size, n_features)
         batch_token_indices = slice_fn(token_indices) # (eval_batch_size, tokens_per_eval_context)
         batch_contexts = slice_fn(X)
 
