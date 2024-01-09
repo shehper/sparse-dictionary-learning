@@ -44,29 +44,51 @@ resampling_interval = 25000 # number of training steps after which neuron resamp
 # TODO: log crude measures like count of neurons with feaeture density < 1e-4 and < 1e-5. 
 # TODO: whats the intuition behind the nll score?
 # TODO: Should I move the AutoEncoder class and all these helper functions to a different file?
+# TODO: The function is_step_in_the_phase_of_investigating_neurons and the line 'if step and self.num_resamples < 4'
+# assume that resampling will be done only 4 times. Perhaps I need to relax that?
+# 
+
+def is_step_start_of_investigating_dead_neurons(step, x):
+    return (step > 0) and step % (x // 2) == 0 and (step // (x // 2)) % 2 != 0 and step < 4 * x
+
+def is_step_in_the_phase_of_investigating_neurons(step, x):
+    milestones = [x, 2*x, 3*x, 4*x]
+    for milestone in milestones:
+        if milestone - x//2 <= step < milestone:
+            return True
+    return False
 
 ## Define Autoencoder class, 
 class AutoEncoder(nn.Module):
-    def __init__(self, n, m, lam=0.003):
-        # for us, n = d_MLP (a.k.a. n_ffwd) and m = number of features
+    def __init__(self, n, m, lam=0.003, resampling_interval=None):
+        # for us, n = d_MLP (a.k.a. n_ffwd) and m = number of autoencoder neurons
         super().__init__()
+        self.n, self.m = n, m
         self.enc = nn.Linear(n, m)
         self.relu = nn.ReLU()
         self.dec = nn.Linear(m, n)
         self.lam = lam # coefficient of L_1 loss
 
+        # some variables to be used if resampling neurons
+        self.resampling_interval = resampling_interval
+        self.dead_neurons = None
 
     def forward(self, x):
         # x is of shape (b, n) where b = batch_size, n = d_MLP
+
         xbar = x - self.dec.bias # (b, n)
         f = self.relu(self.enc(xbar)) # (b, m)
         reconst_acts = self.dec(f) # (b, n)
         mseloss = F.mse_loss(reconst_acts, x) # scalar
         l1loss = F.l1_loss(f, torch.zeros(f.shape, device=f.device), reduction='sum') # scalar
         loss = mseloss + self.lam * l1loss # scalar
-        out_dict = {'loss': loss, 'f': f, 'reconst_acts': reconst_acts, 'mse_loss': mseloss, 'l1_loss': l1loss}
-        return loss if self.training else out_dict 
-    
+        
+        # if in training phase (i.e. model.train() has been called), we only need f and loss
+        # but if evaluating (i.e. model.eval() has been called), we will need reconstructed activations and other losses as well
+        out_dict = {'loss': loss, 'f': f} if self.training else {'loss': loss, 'f': f, 'reconst_acts': reconst_acts, 'mse_loss': mseloss, 'l1_loss': l1loss}
+        
+        return out_dict
+
     @torch.no_grad()
     def normalize_decoder_columns(self):
         # TODO: shouldnt these be called self instead of autoencoder?
@@ -81,21 +103,35 @@ class AutoEncoder(nn.Module):
         proj = torch.sum(self.dec.weight.grad * unit_w, dim=0) * unit_w 
         self.dec.weight.grad = self.dec.weight.grad - proj
 
+    @torch.no_grad()
+    def initiate_dead_neurons(self):
+        self.dead_neurons = set([neuron for neuron in range(self.m)])
+
+    @torch.no_grad()
+    def update_dead_neurons(self, f):
+        # obtain indices to columns of f (i.e. neurons) that fire on at least one example
+        active_neurons_this_step = torch.count_nonzero(f, dim=0).nonzero().view(-1)
+        
+        # remove these neurons from self.dead_neurons
+        for neuron in active_neurons_this_step:
+            self.dead_neurons.discard(neuron.item())
 
     @torch.no_grad()
     def resample_neurons(self, data, optimizer):
-        
-        self.dead_neurons = set([2, 1]) # TODO: remove this after self.dead_neurons has been computed in forward method
+
+        if not self.dead_neurons:
+            print(f'no dead neurons to be resampled')
+            return
+
         dead_neurons_t = torch.tensor(list(self.dead_neurons))
         alive_neurons = torch.tensor([i for i in range(self.m) if i not in self.dead_neurons])
-        print(f'alive_neurons are {list(alive_neurons)}') # should be torch.tensor([2, 3])
+        print(f'number of dead neurons at time of resampling: {len(dead_neurons_t)}, alive neurons: {len(alive_neurons)}')
 
         # compute average norm of encoder vectors for alive neurons
         average_enc_norm = torch.mean(torch.linalg.vector_norm(self.enc.weight[alive_neurons], dim=1))
-        print(f'average encoder norm is {average_enc_norm}')
+        #print(f'average encoder norm is {average_enc_norm}')
         
         # expect data to be of shape (N, n_ffwd); in the paper N = 819200
-        batch_size = 8192 # TODO: I can probably remove this when copied to train_sae.py
         num_batches = len(data) // batch_size + (len(data) % batch_size != 0)
         probs = torch.zeros(len(data),) # (N, ) # initiate a tensor of probs = losses**2
         for iter in range(num_batches): 
@@ -108,21 +144,20 @@ class AutoEncoder(nn.Module):
             l1losses = torch.sum(F.l1_loss(f, torch.zeros(f.shape, device=f.device), reduction='none'), dim=1) # (b, )
             probs[iter * batch_size: (iter + 1) * batch_size] = ((mselosses + self.lam * l1losses)**2).to('cpu') # (b, )
 
-
-        torch.manual_seed(0) # TODO: remove this later perhaps
-        exs = data[torch.multinomial(probs, num_samples=len(self.dead_neurons))] # (d, n) where d = len(dead_neurons)
+        # pick examples based on probs
+        exs = data[torch.multinomial(probs, num_samples=len(self.dead_neurons))].to(dtype=torch.float32) # (d, n) where d = len(dead_neurons)
         assert exs.shape == (len(self.dead_neurons), self.n), 'exs has incorrect shape'
-        
+        # normalize examples to have unit norm
         exs_unit_norm = F.normalize(exs, dim=1) # (d, n)
-
+        # reset decoder columns corresponding to dead neurons
         self.dec.weight[:, dead_neurons_t] = torch.transpose(exs_unit_norm, 0, 1) # (n, d)
-
+        # renormalize examples to have norm = average_enc_norm * 0.2
         exs_enc_norm = exs_unit_norm * average_enc_norm * 0.2
-
+        # reset encoder rows and encoder bias elements corresponding to dead neurons
         self.enc.weight[dead_neurons_t] = exs_enc_norm
-
         self.enc.bias[dead_neurons_t] = 0
 
+        # update Adam parameters associated to 
         for i, p in enumerate(optimizer.param_groups[0]['params']): # there is only one parameter group so we can do this
             param_state = optimizer.state[p]
             if i in [0, 1]: # encoder weight and bias
@@ -131,6 +166,9 @@ class AutoEncoder(nn.Module):
             elif i == 2: # decoder weight
                 param_state['exp_avg'][:, dead_neurons_t] = 0
                 param_state['exp_avg_sq'][:, dead_neurons_t] = 0
+
+        # reset self.dead_neurons as there are now none left to be resampled
+        self.dead_neurons = None
 
 # a slightly modified version of nanoGPT get_batch function to get a batch of text data
 def get_text_batch(data, block_size, batch_size):
@@ -237,12 +275,6 @@ if __name__ == '__main__':
     memory = psutil.virtual_memory()
     print(f'loaded data or resampling neurons, available memory now: {memory.available / (1024**3):.2f} GB; memory usage: {memory.percent}%')
 
-    print(type(sae_data_for_resampling_neurons))
-    print(sae_data_for_resampling_neurons.shape)
-    print(sae_data_for_resampling_neurons[:10])
-    raise
-
-
     ## Get text data for evaluation 
     X, Y = get_text_batch(text_data, block_size=block_size, batch_size=eval_contexts) # (eval_contexts, block_size) 
     # in each context, randomly select tokens_per_eval_context (=10 in Anthropic's paper) where 
@@ -251,7 +283,6 @@ if __name__ == '__main__':
     # perhaps we will have to go one order of magnitude lower; use 0.1million contexts
     memory = psutil.virtual_memory()
     print(f'collected text data for evaluation; available memory: {memory.available / (1024**3):.2f} GB; memory usage: {memory.percent}%')
-
 
     ## Compute and store MLP activations, full transformer loss and ablated MLP loss on evaluation text data
     mlp_activations_storage = torch.tensor([], dtype=torch.float16)
@@ -281,12 +312,9 @@ if __name__ == '__main__':
 
 
     ## initiate the autoencoder and optimizer
-    autoencoder = AutoEncoder(n_ffwd, n_features, lam=l1_coeff).to(device)
+    autoencoder = AutoEncoder(n_ffwd, n_features, lam=l1_coeff, resampling_interval=resampling_interval).to(device)
     autoencoder.normalize_decoder_columns() # normalize decoder columns; TODO: I think this should be investigated a bit more
     optimizer = torch.optim.Adam(autoencoder.parameters(), lr=learning_rate) 
-
-    print(autoencoder.dec.weight.shape)
-    raise
     
     ## WANDB LOG
     run_name = f'{time.time():.2f}-autoencoder-{dataset}'
@@ -308,8 +336,8 @@ if __name__ == '__main__':
         
         # forward, backward pass
         optimizer.zero_grad(set_to_none=True) 
-        loss = autoencoder(batch) # f has shape (batch_size, n_features)
-        loss.backward()
+        output = autoencoder(batch) # f has shape (batch_size, n_features) 
+        output['loss'].backward()
 
         # remove component of gradient parallel to weight # TODO: I am still not convinced this is the best approach
         autoencoder.remove_parallel_component_of_decoder_gradient()
@@ -321,9 +349,29 @@ if __name__ == '__main__':
         if step % 1000 == 0: 
             autoencoder.normalize_decoder_columns()
         
-        del batch; gc.collect(); torch.cuda.empty_cache() # free up memory
+        # free up memory
+        del batch; gc.collect(); torch.cuda.empty_cache() 
 
-        ## log info
+        ### ------------ perform neuron resampling ----------- ######
+        # check if at this step, we should start investigating dead/alive neurons
+        # if yes, initiate dead nurons as a set of all neurons
+        if is_step_start_of_investigating_dead_neurons(step, resampling_interval):
+            print(f'initiating investigation of dead neurons for neuron resampling at step = {step}')
+            autoencoder.initiate_dead_neurons()
+
+        # check if this step falls during a phase where we should check for active neurons
+        # and update the dead_neurons set of autoencoder
+        if is_step_in_the_phase_of_investigating_neurons(step, resampling_interval):
+            autoencoder.update_dead_neurons(output['f'])
+
+        # if step is a multiple of resampling interval, perform neuron resampling
+        if step > 0 and step % resampling_interval == 0:
+            autoencoder.resample_neurons(sae_data_for_resampling_neurons, optimizer)
+
+        # free up memory
+        del output; gc.collect(); torch.cuda.empty_cache() 
+
+         ### ------------ log info ----------- ######
         if (step % eval_interval == 0) or step == total_steps - 1:
             autoencoder.eval() 
             log_dict = {'losses/reconstructed_nll': 0, 'losses/autoencoder_loss': 0, 'losses/mse_loss': 0, 'losses/l1_loss': 0, 
@@ -376,22 +424,22 @@ if __name__ == '__main__':
             log_feature_activation_density = np.log10(feature_activation_counts[feature_activation_counts != 0]/(eval_tokens)) # (n_features,)
             feature_density_histogram = get_histogram_image(log_feature_activation_density)
             print(f"batch: {step}/{total_steps}, time per step: {(time.time()-start_time)/(step+1):.2f}, logging time = {(time.time()-start_log_time):.2f}")
+            print(log_dict)
 
             # log more metrics
-            log_dict.update(
-                    {'debug/mean_dictionary_vector_length': torch.mean(torch.linalg.vector_norm(autoencoder.dec.weight, dim=0)),
-                    'feature_density/feature_density_histograms': wandb.Image(feature_density_histogram),
-                    'feature_density/min_log_feat_density': log_feature_activation_density.min().item() if len(log_feature_activation_density) > 0 else -100,
-                    'feature_density/num_neurons_with_feature_density_above_1e-3': (log_feature_activation_density > -3).sum(),
-                    'feature_density/num_neurons_with_feature_density_below_1e-3': (log_feature_activation_density < -3).sum(),
-                    'feature_density/num_neurons_with_feature_density_below_1e-4': (log_feature_activation_density < -4).sum(), 
-                    'feature_density/num_neurons_with_feature_density_below_1e-5': (log_feature_activation_density < -5).sum(),
-                    'feature_density/num_alive_neurons': len(log_feature_activation_density),
-                    'training_step': step, 
-                    'training_examples': step * batch_size
-                    })
-
             if wandb_log:
+                log_dict.update(
+                        {'debug/mean_dictionary_vector_length': torch.mean(torch.linalg.vector_norm(autoencoder.dec.weight, dim=0)),
+                        'feature_density/feature_density_histograms': wandb.Image(feature_density_histogram),
+                        'feature_density/min_log_feat_density': log_feature_activation_density.min().item() if len(log_feature_activation_density) > 0 else -100,
+                        'feature_density/num_neurons_with_feature_density_above_1e-3': (log_feature_activation_density > -3).sum(),
+                        'feature_density/num_neurons_with_feature_density_below_1e-3': (log_feature_activation_density < -3).sum(),
+                        'feature_density/num_neurons_with_feature_density_below_1e-4': (log_feature_activation_density < -4).sum(), 
+                        'feature_density/num_neurons_with_feature_density_below_1e-5': (log_feature_activation_density < -5).sum(),
+                        'feature_density/num_alive_neurons': len(log_feature_activation_density),
+                        'training_step': step, 
+                        'training_examples': step * batch_size
+                        })            
                 wandb.log(log_dict)
 
             autoencoder.train()
@@ -408,42 +456,6 @@ if __name__ == '__main__':
             print(f"saving checkpoint to {out_dir}/{run_name} at training step = {step}")
             torch.save(checkpoint, os.path.join(out_dir, run_name, 'ckpt.pt'))
 
-        # TODO: modify this code somehow to allow for neuron resampling more than 4 times and at step > 1e5 perhaps?
-        # or maybe just impose a condition that neurons are resampled only 4 times in total
-
-        # TODO: neuron resampling should be a method of AutoEncoder and the code below should be simplified to 2-3 lines
-
-        ## neuron resampling
-        # start keeping track of dead neurons when step is an odd multiple of resampling_interval//2
-        if step % (resampling_interval) == resampling_interval//2 and step < 1e5:
-            dead_neurons = set([feature for feature in range(n_features)])
-            initial_step_for_neuron_tracking = step # the step at which we started tracking dead neurons 
-            
-        # remove any autoencoder neurons from dead_neurons that are active in this training step
-        if (resampling_interval//2) <= step < resampling_interval or (resampling_interval//2)*3 <= step < resampling_interval*2 \
-        or (resampling_interval//2)*5 <= step < resampling_interval*3 or (resampling_interval//2)*7 <= step < resampling_interval*4:   
-            # torch.count_nonzero(f, dim=0) counts the number of examples on which each feature is active
-            # torch.count_nonzero(f, dim=0).nonzero() gives indices of alive features, which we discard from the set dead_neurons
-            for feature_number in torch.count_nonzero(f, dim=0).nonzero().view(-1):
-                dead_neurons.discard(feature_number.item())
-
-            if step % 100 == 0:
-                print(f'At training step = {step}, there are {len(dead_neurons)} neurons that have not fired since training step = {initial_step_for_neuron_tracking}')
-
-
-        if (step + 1) % resampling_interval == 0 and step < 1e5:
-            # compute the loss of the current model on 100 batches
-            # choose a batch of data 
-            # TODO: pick a batch of data
-            #batch = sae_data_for_resampling_neurons[batch_start: ] 
-            if len(dead_neurons) > 0:           
-                temp_encoder_layer = nn.Linear(n_ffwd, n_features, device=device)
-                temp_decoder_layer = nn.Linear(n_features, n_ffwd, device=device)
-                with torch.no_grad():
-                    autoencoder.enc.weight[torch.tensor(list(dead_neurons))] = temp_encoder_layer.weight[torch.tensor(list(dead_neurons))]
-                    autoencoder.dec.weight[:, torch.tensor(list(dead_neurons))] = temp_decoder_layer.weight[:, torch.tensor(list(dead_neurons))]
-                del temp_encoder_layer, temp_decoder_layer; gc.collect(); torch.cuda.empty_cache()
-                print(f'resampled {len(dead_neurons)} neurons at training step = {step}')
 
     if wandb_log:
         wandb.finish()    
