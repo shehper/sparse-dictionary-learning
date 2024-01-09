@@ -70,17 +70,16 @@ class AutoEncoder(nn.Module):
     @torch.no_grad()
     def normalize_decoder_columns(self):
         # TODO: shouldnt these be called self instead of autoencoder?
-        autoencoder.dec.weight.data = F.normalize(autoencoder.dec.weight.data, dim=0)
+        self.dec.weight.data = F.normalize(self.dec.weight.data, dim=0)
 
     def remove_parallel_component_of_decoder_gradient(self):
         # remove gradient information parallel to weight vectors
         # to do so, compute projection of gradient onto weight
         # recall projection of a onto b is proj_b a = (a.\hat{b}) \hat{b}
         # here, a = grad, b = weight
-        unit_w = F.normalize(autoencoder.dec.weight, dim=0) # \hat{b}
-        proj = torch.sum(autoencoder.dec.weight.grad * unit_w, dim=0) * unit_w 
-        autoencoder.dec.weight.grad = autoencoder.dec.weight.grad - proj
-
+        unit_w = F.normalize(self.dec.weight, dim=0) # \hat{b}
+        proj = torch.sum(self.dec.weight.grad * unit_w, dim=0) * unit_w 
+        self.dec.weight.grad = self.dec.weight.grad - proj
 
 
     @torch.no_grad()
