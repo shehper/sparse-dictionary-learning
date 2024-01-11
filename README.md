@@ -9,9 +9,9 @@ At the current stage, one can train a sparse autoencoder and analyze its feature
     <img src="assets/feature_density_histogram.png" width="300">
 </div>
 
-These neurons and their top 10 activation values along with tokens and contexts are given in [high_density_neurons.html](https://shehper.github.io/monosemantic/autoencoder/out_autoencoder/1704783101.13-autoencoder-openwebtext/high_density_neurons.html). I inspected the first 20 features manually, out of which I could interpret 19. I have written the common theme shared by top 10 activations for these 19 neurons. I also discovered more than 650 token-in-context features with the help of a short Python function. (You may CTRL+F/CMD+F "token-in-context" on the HTML page to see them.)
+These neurons and their top 10 activation values along with tokens and contexts are given in [high_density_neurons.html](https://shehper.github.io/monosemantic/autoencoder/out_autoencoder/1704783101.13-autoencoder-openwebtext/high_density_neurons.html). I inspected the first 20 features manually, out of which I could interpret 19. I have written the common theme shared by top 10 activations for these 19 neurons in the HTML file. I also discovered more than 650 single-token features with the help of a Python function. (You may CTRL+F/CMD+F "single-token" on the HTML page to see them.) Some of these may be token-in-context features, but I have not checked that for individual neurons. 
 
-An interesting example is of the pair of neurons: # 215 and # 2601 that both fire on Cyrilic script. However, one of them fires on vowels and the other one fires on consonants. 
+An interesting example is of the pair of neurons # 215 and # 2601. Both of these neurons fire on Cyrilic script, but one of them fires on vowels (е, у, и, а) and the other one fires on consonants (л, в, р, т). 
 
 <p align="middle">
   <img src="./assets/neuron_215.png" width="230" /> 
@@ -19,7 +19,7 @@ An interesting example is of the pair of neurons: # 215 and # 2601 that both fir
 </p>
 
 
-The loss curves and feature density histograms for my best training run so far are available on this [Weights and Biases page](https://wandb.ai/shehper/sparse-autoencoder-openwebtext-public).
+The loss curves and feature density histograms for the best training run so far are available on this [Weights and Biases page](https://wandb.ai/shehper/sparse-autoencoder-openwebtext-public).
 
 ## Reproduction
 
@@ -58,7 +58,7 @@ python data/openwebtext/prepare.py
 
 Finally, train the 1-layer transformer model:
 ```
-train.py config/train_gpt2.py --wandb_project=monosemantic --n_layer=1 --n_embd=128 --n_head=4 --max_iters=200000 --lr_decay_iters=200000
+python train.py config/train_gpt2.py --wandb_project=monosemantic --n_layer=1 --n_embd=128 --n_head=4 --max_iters=200000 --lr_decay_iters=200000
 ```
 
 I trained the model for only 200000 iterations in order to match the number of training epochs with Anthropic's paper. 
@@ -121,10 +121,9 @@ For example, please see the HTML files [high_density_neurons.html](https://shehp
 
 2. High density neurons as seen in [high_density_neurons.html](https://shehper.github.io/monosemantic/autoencoder/out_autoencoder/1704783101.13-autoencoder-openwebtext/high_density_neurons.html) were quite interpretable. I studied the first twenty neurons in this file, and wrote down the common theme about the context in which these neurons seem to fire. Some of the ultra-low density neurons were also interpretable. (See [ultra_low_density_features.html](https://shehper.github.io/monosemantic/autoencoder/out_autoencoder/1704783101.13-autoencoder-openwebtext/ultra_low_density_neurons.html).) Perhaps, this is because my cutoff (1e-3 in the feature density histogram shown above) for separating high vs ultra-low density was not very precise. 
 
+3. Almost 1/3rd of the ~1700 of neurons in high-density cluster were single-token features. (You may CTRL+F/CMD+F "single-token" in [high_density_neurons.html](https://shehper.github.io/monosemantic/autoencoder/out_autoencoder/1704783101.13-autoencoder-openwebtext/high_density_neurons.html) to look at these single-token features.)
 
-3. Almost 1/3rd of the ~1700 of neurons in high-density cluster were token-in-context features. (You may CTRL+F/CMD+F "tokens-in-context" in [high_density_neurons.html](https://shehper.github.io/monosemantic/autoencoder/out_autoencoder/1704783101.13-autoencoder-openwebtext/high_density_neurons.html) to go through almost all of the tokens-in-context features.)
-
-4. When sorted by highest activation value, most of the neurons seemed to token-in-context neurons. This seems to imply that our autoencoder is learning 
+4. When sorted by highest activation value, several of the top neurons seemed to single-token features. 
 
 5. OpenWebText dataset is mostly monolingual, (I have not computed the exact percentage of English tokens in it yet) but the autoencoder learns features on texts of other languages. For example, the following neurons fire on specific languages or scripts. 3656: Spanish, 1305: Scandinavian, 77: South Slavic languages, 1682: Greek script, and 2601 and 215: Cyrilic. 
 
@@ -133,11 +132,12 @@ For example, please see the HTML files [high_density_neurons.html](https://shehp
 7. I see several � tokens in top activations of neurons. I don't know what these tokens mean, but perhaps this indicates that the OpenWebText contains some characters that BytePairEncoding does not encode. I intend to investigate this further.
 
 ### Possible improvements
-1. *Data type of training data.* I saved MLP activations in float16 instead of float32 in order to save twice the number of examples in the same storage space. 
-2. *Size of training data.* I only used 0.8B activation vectors; in contrast, Anthropic used 8B activation vectors. I made this choice and the previous choice because of storage constraints, though I hope to be able to obtain more storage soon.  
-3. *Dead and ultra-low density neurons.* Out of 4096 neurons, I found around 2324 to be dead, and only around 17 to be in ultra-low density cluster. I expect that with a combination of more training data (as I trained on only 1/10th of the number of training examples used by Anthropic), float32 data type and more hyperparameter-tuning, the number of dead neurons will decrease significantly and the number of ultra-low density neurons will increase.
-4. *Number of evaluation tokens*. I evaluated my AutoEncoder on only 2e5 tokens while Anthropic evaluated their autoencoder on 1e7 tokens. Perhaps, by increasing the number of evaluation tokens, I will see more ultra-low density neurons and less dead neurons.
-5. *A more complete analysis of features*. While the top 10 activations of most features seem to show clear patterns about contexts where these features are active, a more detailed analysis as done by Anthropic in their sections on [Detailed Analysis of Individual Features](https://transformer-circuits.pub/2023/monosemantic-features/index.html#feature-analysis) and [Global Analysis](https://transformer-circuits.pub/2023/monosemantic-features/index.html#global-analysis) needs to be done. 
+1. **Data type of training data.** I saved MLP activations in float16 instead of float32 in order to save twice the number of examples in the same storage space at the cost of precision in each value. 
+2. **Size of training data.** I used only 800M activation vectors; in contrast, Anthropic used 8B activation vectors. I made this choice and the previous choice because of storage constraints, though I hope to be able to obtain more storage soon.  
+3. **Dead and ultra-low density neurons.** Out of 4096 neurons, I found around 2324 to be dead, and only around 17 to be in the ultra-low density cluster. I expect that with a combination of more training data (as I trained on only 1/10th of the number of training examples used by Anthropic), float32 data type and more hyperparameter-tuning, the number of dead neurons will decrease significantly and the number of ultra-low density neurons will increase.
+4. **Number of evaluation tokens**. I evaluated my AutoEncoder on only 2e5 tokens while Anthropic evaluated their autoencoder on 1e7 tokens. Perhaps, by increasing the number of evaluation tokens, I will see more ultra-low density neurons and less dead neurons.
+5. **A more complete analysis of features**. While the top 10 activations of most features seem to show clear patterns about contexts where these features are active, a more detailed analysis as done by Anthropic in their sections on [Detailed Analysis of Individual Features](https://transformer-circuits.pub/2023/monosemantic-features/index.html#feature-analysis) and [Global Analysis](https://transformer-circuits.pub/2023/monosemantic-features/index.html#global-analysis) needs to be done. 
+6. **Feature ablations**. I must ablate features to see their causal effect on next-token-prediction. 
 
 ### Some curiosities
 1. *L1-coefficient.* I do not know why the L1-coefficient for my training runs was three-to-four orders of magnitude smaller than the values used by Anthropic. (I had 3e-7, while they had values of the order of 1e-3 or 1e-4.)
