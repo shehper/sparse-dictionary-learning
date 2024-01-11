@@ -5,13 +5,13 @@ This repository reproduces results of [Anthropic's Monosemanticity paper](https:
 
 At the current stage, one can train a sparse autoencoder and analyze its features following the steps in the Reproduction section. A brief analysis of features has seemed promising. While I found most of the neurons to be dead (a few of the possible reasons for this are mentioned in the 'Possible Improvements' section below), I found ~1750 of 4096 neurons to be in the high density cluster.
 
-<<div align="center">
+<div align="center">
     <img src="assets/feature_density_histogram.png" width="300">
 </div>
 
-These neurons and their top 10 activation values along with tokens and contexts are given in [high_density_neurons.html](https://shehper.github.io/monosemantic/autoencoder/out_autoencoder/1704783101.13-autoencoder-openwebtext/high_density_neurons.html). I inspected the first 20 features manually and found 19 of them to be interpretable. I wrote the common theme that the contexts/tokens of these top 10 activations share in the HTML file. I also wrote a short program that discovered that more than 650 of these features seem to be token-in-context features.(You may CTRL+F/CMD+F "token-in-context" to see them.)
+These neurons and their top 10 activation values along with tokens and contexts are given in [high_density_neurons.html](https://shehper.github.io/monosemantic/autoencoder/out_autoencoder/1704783101.13-autoencoder-openwebtext/high_density_neurons.html). I inspected the first 20 features manually, out of which I could interpret 19. I have written the common theme shared by top 10 activations for these 19 neurons. I also discovered more than 650 token-in-context features with the help of a short Python function. (You may CTRL+F/CMD+F "token-in-context" on the HTML page to see them.)
 
-An interesting example is of neuron # 215 and # 2601. They both fire on Cyrilic script; but one fires on vowels and the other fires on consonants. 
+An interesting example is of the pair of neurons: # 215 and # 2601 that both fire on Cyrilic script. However, one of them fires on vowels and the other one fires on consonants. 
 
 <p align="middle">
   <img src="./assets/neuron_215.png" width="230" /> 
@@ -19,35 +19,35 @@ An interesting example is of neuron # 215 and # 2601. They both fire on Cyrilic 
 </p>
 
 
-The loss curves and feature density histograms for this training run are available on this [Weights and Biases page](https://wandb.ai/shehper/sparse-autoencoder-openwebtext-public).
+The loss curves and feature density histograms for my best training run so far are available on this [Weights and Biases page](https://wandb.ai/shehper/sparse-autoencoder-openwebtext-public).
 
 ## Reproduction
 
 ### Step 0: Make a virtual environment and install packages
 
-Clone the repository and change the directory, 
+Clone the repository and change the directory.
 ```
 https://github.com/shehper/monosemantic.git && cd monosemantic
 ```
 
-Make a new virtual environment, and activate it
+Make a new virtual environment, and activate it.
 ```
 python -m venv ./env
 source ./env/bin/activate
 ```
 
-Install packages from requirements.txt
+Install packages from requirements.txt.
 ```
 pip install -r requirements.txt
 ```
 
 ### Step 1: Train a one-layer transformer model
 
-I used [nanoGPT](https://github.com/karpathy/nanoGPT) to train a one-layer transformer. The required code is in 'transformer' folder. In order to train a one-layer transformer, please follow the following steps.
+I used [nanoGPT](https://github.com/karpathy/nanoGPT) to train a one-layer transformer. The required code is in the 'transformer' folder. 
 
-
+First, move to 'transformer' subdirectory.
 ```
-cd transformer # move to transformer subdirectory
+cd transformer 
 ```
 
 Next, prepare the OpenWebText dataset:
@@ -61,10 +61,8 @@ Finally, train the 1-layer transformer model:
 train.py config/train_gpt2.py --wandb_project=monosemantic --n_layer=1 --n_embd=128 --n_head=4 --max_iters=200000 --lr_decay_iters=200000
 ```
 
-I trained the model for only 200000 iterations in order to roughly match the number of training epochs with Anthropic's paper. 
+I trained the model for only 200000 iterations in order to match the number of training epochs with Anthropic's paper. 
 This run takes ~3 days on one A100 GPU and achieves a validation loss of 4.609.
-
-<!-- Also note that I added three new methods to the GPT class in transformer/model.py: loss_from_mlp_acts (computes negative log-likelihood loss from MLP activations, residual stream, and target tokens, i.e. it performs forward pass from the MLP activations onward); forward_with_and_without_mlp (computes negative log-likelihood loss of the transformer model with and without MLP layer, i.e. it computes the MLP-ablated loss in addition to the usual loss); and get_gelu_acts (returns GeLU activations of the final layer). Other than this, the code in 'transformer' directory is the same as in nanoGPT.   -->
 
 ### Step 2: Generate training data for AutoEncoder
 
@@ -73,22 +71,24 @@ Now move to the autoencoder subdirectory.
 cd ../autoencoder 
 ```
 
-First, generate the training data for autoencoder. 
+First, generate the training data for the autoencoder. 
 ```
 python generate_mlp_data.py
 ```
-This process computes MLP activations on 4 million contexts from the (OpenWebText) dataset, samples these activation vectors from 200 tokens in each context, and randomly shuffles them before saving the entire dataset in n_files=20 files in 'sae_data' subfolder. I saved it in 20 files because the node used for training the autoencoder in step 3 did not have high amounts of RAM available. Therefore, during training, 1/20th of the dataset was loaded at a time. 
+By default, this computes MLP activations on 4 million contexts from the (OpenWebText) dataset, samples these activation vectors from 200 tokens in each context, and randomly shuffles them before saving the entire dataset in n_files=20 files in 'sae_data' subfolder. I used a high-RAM node with 1TB RAM for this step, and it took about ~12 hours to complete.
 
-I used a high-RAM node with 1TB RAM for this step, and it took about ~12 hours to complete. By default, all MLP activations are saved in float16 data type, so as to use the storage space in favor of collecting more examples. The dataset takes around 770GB to store on your hard-disk. If more storage space is available, one may increase number of contexts through '--total_contexts' or save the data in float32 through '--convert_to_f16=False' flag. 
+Note that I saved it in 20 files because the node used for training the autoencoder in Step 3 did not have high amounts of RAM available. Therefore, during training, only 1/20th of the dataset could be loaded at a time. By default, all MLP activations are saved in float16 data type, so as to use the storage space in favor of collecting twice as many examples. The dataset takes around 770GB of storage space. If more storage space is available, one may increase the number of contexts through '--total_contexts' or save the data in float32 through '--convert_to_f16=False' flag. 
 
 ### Step 2a: Pick a subset of data for Neuron Resampling 
 
-Anthropic used a random subset of 819200 activation vectors to resample neurons four times during training. As the node that I used for training (in step 3) did not have high RAM, I used a high-RAM (> 1TB) node to pre-select 4*819200 examples (819200 for each time neurons are resampled) and saved it in a separate file 'data_for_resampling_neurons.pt'. If you have high-RAM available on your GPU node, you may skip this step and pick this subset randomly at the time of neuron resampling.
+Anthropic used a random subset of 819200 activation vectors to resample neurons four times during training. As the node that I used for training (in Step 3) did not have high enough RAM so that I could load the entire training data of the AutoEncoder and select 819200 examples at the time of resampling, I used a high-RAM (> 1TB) node to pre-select 4*819200 examples and saved it in a separate file 'data_for_resampling_neurons.pt'. 
 
 This may be done as follows. 
 ```
 python select_resampling_data.py 
 ```
+
+If you have high-RAM available on your GPU node, you may skip this step and sample the subset randomly at the time of neuron resampling.
 
 ### Step 3: Train a Sparse AutoEncoder model
 
@@ -97,9 +97,8 @@ Next, you may train the sparse autoencoder model as follows.
 python train.py --l1_coeff=3e-7 
 ```
 
-I tuned the L1-coefficient and learning rate a bit and noticed that the best trade-off between feature activation sparsity (=L0-norm) and reconstructed NLL score happens at l1-coeff=3e-7 and learning_rate=3e-4. This L1 coefficient is much smaller than L1-coefficients used in Anthropic's paper. I do not know why this is the case. 
+I tried a few different values of the L1-coefficient and learning rate and noticed that the best trade-off between feature activation sparsity (=L0-norm) and reconstructed NLL score occured around l1-coeff=3e-7 and learning_rate=3e-4. This L1 coefficient is much smaller than the values of L1-coefficient used in Anthropic's paper. I do not know why this is the case. 
 
-Also note that since I had only about ~1TB of storage space, I could 
 
 ## Analysis of Results
 During training, I logged various metrics including feature density histograms. They are available on this [Weights & Biases project](https://wandb.ai/shehper/sparse-autoencoder-openwebtext-public). The spikes in various loss curves appear at the training step of neuron resampling, as one would expect. 
