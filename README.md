@@ -5,19 +5,17 @@ This repository reproduces results of [Anthropic's Monosemanticity paper](https:
 
 At the current stage, one can train a sparse autoencoder and analyze its features following the steps in the Reproduction section. A brief analysis of features has seemed promising. While I found most of the neurons to be dead (a few of the possible reasons for this are mentioned in the 'Possible Improvements' section below), I found ~1750 of 4096 neurons to be in the high density cluster.
 
-<div align="center">
-
-![feature_density_histogram](assets/feature_density_histogram.png)
-
+<<div align="center">
+    <img src="assets/feature_density_histogram.png" width="300">
 </div>
 
-These neurons and their top 10 activation values along with tokens and contexts are given in [high_density_features.html](autoencoder/out_autoencoder/1704783101.13-autoencoder-openwebtext/high_density_neurons.html). I inspected the first 20 features manually and found 19 of them to be interpretable. I wrote the common theme that the contexts/tokens of these top 10 activations share in the HTML file. I also wrote a short program that discovered that more than 650 of these features seem to be token-in-context features.(You may CTRL+F/CMD+F "token-in-context" to see them.)
+These neurons and their top 10 activation values along with tokens and contexts are given in [high_density_neurons.html](https://shehper.github.io/monosemantic/autoencoder/out_autoencoder/1704783101.13-autoencoder-openwebtext/high_density_neurons.html). I inspected the first 20 features manually and found 19 of them to be interpretable. I wrote the common theme that the contexts/tokens of these top 10 activations share in the HTML file. I also wrote a short program that discovered that more than 650 of these features seem to be token-in-context features.(You may CTRL+F/CMD+F "token-in-context" to see them.)
 
 An interesting example is of neuron # 215 and # 2601. They both fire on Cyrilic script; but one fires on vowels and the other fires on consonants. 
 
 <p align="middle">
-  <img src="./assets/neuron_215.png" width="300" /> 
-  <img src="./assets/neuron_2601.png" width="350" /> 
+  <img src="./assets/neuron_215.png" width="230" /> 
+  <img src="./assets/neuron_2601.png" width="250" /> 
 </p>
 
 
@@ -115,19 +113,17 @@ python top_activations.py --autoencoder_subdir=/subdirectory/of/out_autoencoder/
 
 where /subdirectory/of/out_autoencoder/containing_model_ckpt is the name of the subdirectory of 'out_autencoder' folder containing the model checkpoint. This evaluates the model on 20000 contexts from the OpenWebText dataset. The output is saved as a dictionary of k=10 top activations for each autoencoder neuron. If we pass publish_html=True, it also saves the top 10 activations and the associated tokens and contexts for each neuron in the form of an HTML file in the same subdirectory.
 
-For example, please see the HTML files [high_density_features.html](autoencoder/out_autoencoder/1704783101.13-autoencoder-openwebtext/high_density_neurons.html) and [ultra_low_density_neurons.html](autoencoder/out_autoencoder/1704783101.13-autoencoder-openwebtext/ultra_low_density_neurons.html) for the model with l1_coeff=3e-7, learning_rate=3e-4, and loss curves as in the afore-mentioned [Weights & Biases page](https://wandb.ai/shehper/sparse-autoencoder-openwebtext-public/runs/rajo0rsx?workspace=user-).
+For example, please see the HTML files [high_density_neurons.html](https://shehper.github.io/monosemantic/autoencoder/out_autoencoder/1704783101.13-autoencoder-openwebtext/high_density_neurons.html) and [ultra_low_density_neurons.html](https://shehper.github.io/monosemantic/autoencoder/out_autoencoder/1704783101.13-autoencoder-openwebtext/ultra_low_density_neurons.html) for the model with l1_coeff=3e-7, learning_rate=3e-4, and loss curves as in the afore-mentioned [Weights & Biases page](https://wandb.ai/shehper/sparse-autoencoder-openwebtext-public/runs/rajo0rsx?workspace=user-).
 
 
 ## Comments
 ### Preliminary observations
 1. I found the algorithm suggested by Anthropic for neuron resampling to be extremely useful. With all of the other hyperparameters fixed (in particular, l1_coeff=3e-7, learning_rate=3e-4), I found that only ~200 neurons were alive without any neuron resampling, ~350 neurons were alive with a naive neuron resampling procedure (i.e. I re-initialized the weights of dead neurons using the PyTorch default Kaiming Uniform initialization), and 1700+ neurons were alive with Anthropic's neuron resampling procedure. 
 
-2. High density neurons as seen in [high_density_features.html](autoencoder/out_autoencoder/1704783101.13-autoencoder-openwebtext/high_density_neurons.html) were quite interpretable. I studied the first twenty neurons in this file, and wrote down the common theme about the context in which these neurons seem to fire. 
-
-Some of the ultra-low density neurons were also interpretable. (See [ultra_low_density_features.html](autoencoder/out_autoencoder/1704783101.13-autoencoder-openwebtext/high_density_neurons.html)) Perhaps, this is because my cutoff (1e-3 in the feature density histogram shown above) for separating high vs ultra-low density was not very precise. 
+2. High density neurons as seen in [high_density_neurons.html](https://shehper.github.io/monosemantic/autoencoder/out_autoencoder/1704783101.13-autoencoder-openwebtext/high_density_neurons.html) were quite interpretable. I studied the first twenty neurons in this file, and wrote down the common theme about the context in which these neurons seem to fire. Some of the ultra-low density neurons were also interpretable. (See [ultra_low_density_features.html](https://shehper.github.io/monosemantic/autoencoder/out_autoencoder/1704783101.13-autoencoder-openwebtext/ultra_low_density_neurons.html).) Perhaps, this is because my cutoff (1e-3 in the feature density histogram shown above) for separating high vs ultra-low density was not very precise. 
 
 
-3. Almost 1/3rd of the ~1700 of neurons in high-density cluster were token-in-context features. (You may CTRL+F/CMD+F "tokens-in-context" in [high_density_neurons.html](autoencoder/out_autoencoder/1704783101.13-autoencoder-openwebtext/high_density_neurons.html) to go through almost all of the tokens-in-context features.)
+3. Almost 1/3rd of the ~1700 of neurons in high-density cluster were token-in-context features. (You may CTRL+F/CMD+F "tokens-in-context" in [high_density_neurons.html](https://shehper.github.io/monosemantic/autoencoder/out_autoencoder/1704783101.13-autoencoder-openwebtext/high_density_neurons.html) to go through almost all of the tokens-in-context features.)
 
 4. When sorted by highest activation value, most of the neurons seemed to token-in-context neurons. This seems to imply that our autoencoder is learning 
 
