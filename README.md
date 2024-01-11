@@ -23,7 +23,7 @@ The loss curves and feature density histograms for the best training run so far 
 
 ## Reproduction
 
-### Step 0: Make a virtual environment and install packages
+### Step 0: Make a virtual environment and install required packages
 
 Clone the repository and change the directory.
 ```
@@ -41,28 +41,40 @@ Install packages from requirements.txt.
 pip install -r requirements.txt
 ```
 
+I used Python 3.9 for this project. If you have an older version of OpenSSL on your machine, you will notice that downloading and tokenizing dataset in Step 1 will return a compatibility error between the versions of urllib3 and OpenSSL. In this case, you may upgrade OpenSSL or downgrade sentry-sdk and urllib3 to older versions as follows.
+
+```
+pip install sentry-sdk==1.29.2 # try only if prepare.py in Step 1 returns ImportError for urllib3
+pip install urllib3==1.26.15 # try only if prepare.py in Step 1 returns ImportError for urllib3
+```
+
 ### Step 1: Train a one-layer transformer model
 
-I used [nanoGPT](https://github.com/karpathy/nanoGPT) to train a one-layer transformer. The required code is in the 'transformer' folder. 
+I used [nanoGPT](https://github.com/karpathy/nanoGPT) to train a one-layer transformer. The required code is in the 'transformer' subfolder of this repository. 
 
-First, move to 'transformer' subdirectory.
+In order to train this transformer model, first move to the 'transformer' subdirectory.
 ```
 cd transformer 
 ```
 
-Next, prepare the OpenWebText dataset:
+Next, download and tokenize the OpenWebText dataset as follows. (If it gives any import errors, please look at the possible solution provided in Step 0.)
 
 ```
 python data/openwebtext/prepare.py 
 ```
 
-Finally, train the 1-layer transformer model:
+Now, train the 1-layer transformer model:
 ```
 python train.py config/train_gpt2.py --wandb_project=monosemantic --n_layer=1 --n_embd=128 --n_head=4 --max_iters=200000 --lr_decay_iters=200000
 ```
 
-I trained the model for only 200000 iterations in order to match the number of training epochs with Anthropic's paper. 
-This run takes ~3 days on one A100 GPU and achieves a validation loss of 4.609.
+This run saves the model checkpoints in the subfolder transformer/out. I trained the model for 200000 iterations in order to match the number of training epochs with Anthropic's paper. This run took around 3 days on an A100 GPU and achieved a validation loss of 4.609. 
+
+If you have a node with more than one GPU available, you may alternatively train the model as follows for faster training. Here num_gpus is the number of GPUs on the node.
+
+```
+torchrun --standalone --nproc_per_node=num_gpus train.py config/train_gpt2.py --wandb_project=monosemantic --n_layer=1 --n_embd=128 --n_head=4 --max_iters=200000 --lr_decay_iters=200000
+```
 
 ### Step 2: Generate training data for AutoEncoder
 
@@ -75,9 +87,11 @@ First, generate the training data for the autoencoder.
 ```
 python generate_mlp_data.py
 ```
-By default, this computes MLP activations on 4 million contexts from the (OpenWebText) dataset, samples these activation vectors from 200 tokens in each context, and randomly shuffles them before saving the entire dataset in n_files=20 files in 'sae_data' subfolder. I used a high-RAM node with 1TB RAM for this step, and it took about ~12 hours to complete.
+By default, this computes MLP activations for 4 million contexts, and samples and randomly shuffles the outputs for 200 tokens per context. The dataset is saved in n_files=20 files in 'sae_data' subfolder of autoencoder. You may choose different values for these variables using --total_contexts, --tokens_per_context and --n_files command line arguments.
 
-Note that I saved it in 20 files because the node used for training the autoencoder in Step 3 did not have high amounts of RAM available. Therefore, during training, only 1/20th of the dataset could be loaded at a time. By default, all MLP activations are saved in float16 data type, so as to use the storage space in favor of collecting twice as many examples. The dataset takes around 770GB of storage space. If more storage space is available, one may increase the number of contexts through '--total_contexts' or save the data in float32 through '--convert_to_f16=False' flag. 
+I used a node with 1TB RAM for this step as the dataset takes about 770GB space. I saved it in 20 files in order to be able to train the autoencoder model on a node with less CPU RAM (as low as 64GB) in Step 3.  
+
+By default, MLP activations were saved in float16 data type, but you may change that by passing '--convert_to_f16=False' flag in the command line input. 
 
 ### Step 2a: Pick a subset of data for Neuron Resampling 
 
