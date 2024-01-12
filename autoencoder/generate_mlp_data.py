@@ -1,5 +1,5 @@
 """
-Generate training data for Sparse Autoencoder. 
+Generate training data for sparse autoencoder. 
 """
 import os
 import torch
@@ -15,7 +15,7 @@ from model import GPTConfig, GPT
 ## define some parameters; these can be overwritten from command line
 device = 'cpu'
 seed = 1442
-total_contexts = 400000 
+total_contexts = 4000000 
 contexts_per_batch = 500
 tokens_per_context = 200 
 convert_to_f16 = True # save activations in Half dtype instead of Float
