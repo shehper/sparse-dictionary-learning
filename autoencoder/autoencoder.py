@@ -78,7 +78,7 @@ class AutoEncoder(nn.Module):
         num_batches = len(data) // batch_size + (len(data) % batch_size != 0)
         probs = torch.zeros(len(data),) # (N, ) # initiate a tensor of probs = losses**2
         for iter in range(num_batches): 
-            print(f'computing probs=losses**2 for iter = {iter}/{num_batches} for neuron resampling')
+            print(f'computing probs=losses**2 for iter = {iter}/{num_batches} before resampling dead neurons')
             x = data[iter * batch_size: (iter + 1) * batch_size].to(device) # (b, n) where b = min(batch_size, remaining examples in data), n = d_MLP
             xbar = x - self.dec.bias # (b, n)
             f = self.relu(self.enc(xbar)) # (b, m)
