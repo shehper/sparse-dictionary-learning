@@ -2,7 +2,7 @@
 Train a Sparse AutoEncoder model
 
 Run on a macbook on a Shakespeare dataset as 
-python train_sae.py --dataset=shakespeare_char --gpt_dir=out-shakespeare-char --eval_contexts=1000 --eval_batch_size=16 --batch_size=128 --device=cpu --eval_interval=100 --n_features=1024 --save_checkpoint=False
+python train.py --dataset=shakespeare_char --gpt_dir=out-shakespeare-char --eval_contexts=1000 --eval_batch_size=16 --batch_size=128 --device=cpu --eval_interval=100 --n_features=1024 --resampling_interval=150 
 """
 import os
 import torch
@@ -41,16 +41,19 @@ save_interval = 10000 # number of training steps after which a checkpoint will b
 out_dir = 'out_autoencoder' # directory containing trained autoencoder model weights
 # and to be consistent with top_activations.py
 resampling_interval = 25000 # number of training steps after which neuron resampling will be performed
+num_resamples = 4 # number of times resampling is to be performed; it is done 4 times in Anthropic's paper
 
-def is_step_start_of_investigating_dead_neurons(step, x):
+def is_step_start_of_investigating_dead_neurons(step, resampling_interval, num_resamples):
     """checks we should start investigating dead/alive neurons at this step.
     In Anthropic's paper, it is step # 12500, 37500, 62500 and 87500, i.e. an odd multiple of (resampling_interval//2)."""
-    return (step > 0) and step % (x // 2) == 0 and (step // (x // 2)) % 2 != 0 and step < 4 * x
+    x, y = resampling_interval, num_resamples
+    return (step > 0) and step % (x // 2) == 0 and (step // (x // 2)) % 2 != 0 and step < x * y
 
-def is_step_in_the_phase_of_investigating_neurons(step, x):
+def is_step_in_the_phase_of_investigating_neurons(step, resampling_interval, num_resamples):
     """checks if this step falls in a phase where we should be check for active neurons.
        In Anthropic's paper, it a step in the range [12500, 25000), [37500, 50000), [62500, 75000), or [87500, 100000). """
-    milestones = [x, 2*x, 3*x, 4*x]
+    x, y = resampling_interval, num_resamples
+    milestones = [i*x for i in range(1, y+1)] #[x, 2*x, 3*x, 4*x]
     for milestone in milestones:
         if milestone - x//2 <= step < milestone:
             return True
@@ -98,7 +101,6 @@ def load_data(step, batch_size, current_partition_index, current_partition, n_pa
         batch = current_partition[batch_start:batch_end].to(torch.float32)
     assert len(batch) == batch_size, f"length of batch = {len(batch)} at step = {step} and partition number = {current_partition_index} is not correct"
     return batch, current_partition, current_partition_index, offset
-
 
 def get_histogram_image(data, bins='auto'):
     """plots a histogram for data and converts it to a PIL image so that it can be logged with wandb"""
@@ -218,13 +220,13 @@ if __name__ == '__main__':
 
     ## TRAINING LOOP
     start_time = time.time()
-    total_steps = total_training_examples // batch_size
-    for step in range(total_steps):
+    num_steps = total_training_examples // batch_size
+    for step in range(num_steps):
  
         ## load a batch of data        
         batch, current_partition, current_partition_index, offset = load_data(step, batch_size, current_partition_index, current_partition, n_partitions, examples_per_partition, offset)
         batch = batch.pin_memory().to(device, non_blocking=True) if device_type == 'cuda' else batch.to(device)
-        
+
         # forward, backward pass
         optimizer.zero_grad(set_to_none=True) 
         output = autoencoder(batch) # f has shape (batch_size, n_features) 
@@ -239,31 +241,30 @@ if __name__ == '__main__':
         # periodically update the norm of dictionary vectors to make sure they don't deviate too far from 1.
         if step % 1000 == 0: 
             autoencoder.normalize_decoder_columns()
-        
-        # free up memory
-        del batch; gc.collect(); torch.cuda.empty_cache() 
 
-        ### ------------ perform neuron resampling ----------- ######
+        ## ------------ perform neuron resampling ----------- ######
         # check if at this step, we should start investigating dead/alive neurons
         # in Anthropic's paper, this is done at step # 12500, 37500, 62500 and 87500, i.e. an odd multiple of (resampling_interval//2).
-        if is_step_start_of_investigating_dead_neurons(step, resampling_interval):
+        if is_step_start_of_investigating_dead_neurons(step, resampling_interval, num_resamples):
             print(f'initiating investigation of dead neurons at step = {step}')
             autoencoder.initiate_dead_neurons()
 
         # check if this step falls in a phase where we should check for active neurons
         # in Anthropic's paper, this is a step in the range [12500, 25000), [37500, 50000), [62500, 75000), [87500, 100000). 
-        if is_step_in_the_phase_of_investigating_neurons(step, resampling_interval):
+        if is_step_in_the_phase_of_investigating_neurons(step, resampling_interval, num_resamples):
             autoencoder.update_dead_neurons(output['f'])
 
-        # if step is a multiple of resampling interval, perform neuron resampling
-        if step > 0 and step % resampling_interval == 0:
-            autoencoder.resample_neurons(data=data_for_resampling_neurons, optimizer=optimizer, batch_size=batch_size)
-
         # free up memory
-        del output; gc.collect(); torch.cuda.empty_cache() 
+        del batch, output; gc.collect(); torch.cuda.empty_cache() 
+        
+        # if step is a multiple of resampling interval, perform neuron resampling
+        if (step+1) % resampling_interval == 0 and step < num_resamples * resampling_interval:
+            print(f'{len(autoencoder.dead_neurons)} to be resampled at step = {step}')
+            autoencoder.resample_neurons(data=data_for_resampling_neurons, optimizer=optimizer, batch_size=batch_size)
+        
 
         ### ------------ log info ----------- ######
-        if (step % eval_interval == 0) or step == total_steps - 1:
+        if (step % eval_interval == 0) or step == num_steps - 1:
             autoencoder.eval() 
             log_dict = {'losses/reconstructed_nll': 0, # log-likelihood loss using the output of autoencoder as MLP activations in the transformer model 
                         'losses/feature_activation_sparsity': 0, # L0-norm; average number of non-zero components of the feature activation vector f 
@@ -316,7 +317,7 @@ if __name__ == '__main__':
             # compute feature densities and plot feature density histogram
             log_feature_activation_density = np.log10(feature_activation_counts[feature_activation_counts != 0]/(eval_tokens)) # (n_features,)
             feature_density_histogram = get_histogram_image(log_feature_activation_density)
-            print(f"batch: {step}/{total_steps}, time per step: {(time.time()-start_time)/(step+1):.2f}, logging time = {(time.time()-start_log_time):.2f}")
+            print(f"batch: {step}/{num_steps}, time per step: {(time.time()-start_time)/(step+1):.2f}, logging time = {(time.time()-start_log_time):.2f}")
             # print(log_dict)
 
             # log more metrics
@@ -338,7 +339,7 @@ if __name__ == '__main__':
             autoencoder.train()
                 
         ### ------------ save a checkpoint ----------- ######
-        if save_checkpoint and step > 0 and (step % save_interval == 0 or step == total_steps - 1):
+        if save_checkpoint and step > 0 and (step % save_interval == 0 or step == num_steps - 1):
             checkpoint = {
                     'autoencoder': autoencoder.state_dict(),
                     'optimizer': optimizer.state_dict(),
@@ -352,13 +353,10 @@ if __name__ == '__main__':
 
     if wandb_log:
         wandb.finish()    
-    print(f'Finished training after training on {total_steps * batch_size} examples')
+    print(f'Finished training after training on {num_steps * batch_size} examples')
 
 
-
-# TODO: Fix my training loops by including training on the last few examples with count < batch_size. As it is, I am ignoring them
+# TODO: Update my training loop and load_data function to including the last few examples with count < batch_size. As it is, I am ignoring them
 # TODO: compile the gpt model and sae model for faster training?
-# TODO: The function is_step_in_the_phase_of_investigating_neurons and the line 'if step and self.num_resamples < 4'
-# assume that resampling will be done only 4 times. Perhaps I need to relax that?
 # TODO: does the dtype of mlp activations affect the AutoEncoder performance?
 # TODO: Can I somehow get more training data? Or train on repeated data? That might bring more neurons to life. 
