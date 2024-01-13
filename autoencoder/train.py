@@ -94,6 +94,7 @@ def load_data(step, batch_size, current_partition_index, current_partition, n_pa
         current_partition_index += 1
         del current_partition; gc.collect()
         current_partition = torch.load(f'sae_data/sae_data_{current_partition_index}.pt')
+        print(f'partition = {current_partition_index} of training data successfully loaded!')
         batch = torch.cat([batch, current_partition[:batch_size - remaining]]).to(torch.float32)
         offset = batch_size - remaining
     else:
