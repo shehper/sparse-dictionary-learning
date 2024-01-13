@@ -37,14 +37,12 @@ class AutoEncoder(nn.Module):
 
     @torch.no_grad()
     def normalize_decoder_columns(self):
-        # TODO: shouldnt these be called self instead of autoencoder?
         self.dec.weight.data = F.normalize(self.dec.weight.data, dim=0)
 
     def remove_parallel_component_of_decoder_gradient(self):
         # remove gradient information parallel to weight vectors
         # to do so, compute projection of gradient onto weight
         # recall projection of a onto b is proj_b a = (a.\hat{b}) \hat{b}
-        # here, a = grad, b = weight
         unit_w = F.normalize(self.dec.weight, dim=0) # \hat{b}
         proj = torch.sum(self.dec.weight.grad * unit_w, dim=0) * unit_w 
         self.dec.weight.grad = self.dec.weight.grad - proj
@@ -66,23 +64,21 @@ class AutoEncoder(nn.Module):
     def resample_neurons(self, data, optimizer, batch_size=8192):
 
         if not self.dead_neurons:
-            print(f'no dead neurons to be resampled')
             return
 
         device = next(self.parameters()).device # if all model parameters are on the same device (which in our case is True), use this to get that device
         dead_neurons_t = torch.tensor(list(self.dead_neurons))
         alive_neurons = torch.tensor([i for i in range(self.m) if i not in self.dead_neurons])
-        print(f'number of dead neurons at time of resampling: {len(dead_neurons_t)}, alive neurons: {len(alive_neurons)}')
 
         # compute average norm of encoder vectors for alive neurons
         average_enc_norm = torch.mean(torch.linalg.vector_norm(self.enc.weight[alive_neurons], dim=1))
-        #print(f'average encoder norm is {average_enc_norm}')
         
+        # compute probs = loss^2 for all examples in data
         # expect data to be of shape (N, n_ffwd); in the paper N = 819200
         num_batches = len(data) // batch_size + (len(data) % batch_size != 0)
         probs = torch.zeros(len(data),) # (N, ) # initiate a tensor of probs = losses**2
         for iter in range(num_batches): 
-            print(f'computing losses for iter = {iter}/{num_batches}')
+            print(f'computing probs=losses**2 for iter = {iter}/{num_batches} for neuron resampling')
             x = data[iter * batch_size: (iter + 1) * batch_size].to(device) # (b, n) where b = min(batch_size, remaining examples in data), n = d_MLP
             xbar = x - self.dec.bias # (b, n)
             f = self.relu(self.enc(xbar)) # (b, m)
@@ -94,17 +90,17 @@ class AutoEncoder(nn.Module):
         # pick examples based on probs
         exs = data[torch.multinomial(probs, num_samples=len(self.dead_neurons))].to(dtype=torch.float32) # (d, n) where d = len(dead_neurons)
         assert exs.shape == (len(self.dead_neurons), self.n), 'exs has incorrect shape'
-        # normalize examples to have unit norm
+        
+        # normalize examples to have unit norm and reset decoder weights for dead neurons
         exs_unit_norm = F.normalize(exs, dim=1).to(device) # (d, n)
-        # reset decoder columns corresponding to dead neurons
         self.dec.weight[:, dead_neurons_t] = torch.transpose(exs_unit_norm, 0, 1) # (n, d)
-        # renormalize examples to have norm = average_enc_norm * 0.2
+        
+        # renormalize examples to have norm = average_enc_norm * 0.2 and reset encoder weights and biases
         exs_enc_norm = exs_unit_norm * average_enc_norm * 0.2
-        # reset encoder rows and encoder bias elements corresponding to dead neurons
         self.enc.weight[dead_neurons_t] = exs_enc_norm
         self.enc.bias[dead_neurons_t] = 0
 
-        # update Adam parameters associated to 
+        # update Adam parameters associated to decoder weights, and encoder weights and bias
         for i, p in enumerate(optimizer.param_groups[0]['params']): # there is only one parameter group so we can do this
             param_state = optimizer.state[p]
             if i in [0, 1]: # encoder weight and bias
@@ -113,6 +109,8 @@ class AutoEncoder(nn.Module):
             elif i == 2: # decoder weight
                 param_state['exp_avg'][:, dead_neurons_t] = 0
                 param_state['exp_avg_sq'][:, dead_neurons_t] = 0
+
+        print('Dead neurons resampled successfully!')
 
         # reset self.dead_neurons as there are now none left to be resampled
         self.dead_neurons = None
