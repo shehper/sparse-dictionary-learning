@@ -76,7 +76,7 @@ If you have a node with more than one GPU available, you may alternatively train
 torchrun --standalone --nproc_per_node=num_gpus train.py config/train_gpt2.py --wandb_project=monosemantic --n_layer=1 --n_embd=128 --n_head=4 --max_iters=200000 --lr_decay_iters=200000
 ```
 
-** step 2: generate training data for autoencoder**
+**step 2: generate training data for autoencoder**
 
 Now move to the autoencoder subdirectory. 
 ```
