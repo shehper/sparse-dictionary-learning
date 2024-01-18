@@ -26,10 +26,10 @@ interval_exs = 5 # number of examples to sample from each interval of activation
 make_histogram = False
 
 ## define a function that converts tokens to html text
-def context_to_html(text, max_act_this_text):
+def context_to_html(text, max_act_this_text, decode):
     out = """"""
     for token, act in text: 
-        token = decode([token]).replace('\n', '<span style="font-weight: normal;">&#x23CE;</span>').replace(' ', '&nbsp;')
+        token = decode([token.item()]).replace('\n', '<span style="font-weight: normal;">&#x23CE;</span>').replace(' ', '&nbsp;')
         if act == 0:
             out += token
         elif act == max_act_this_text: # if the 
@@ -183,7 +183,7 @@ def tooltip_css():
         
     return tooltip_css
 
-def feature_page(feature_info):
+def feature_page(feature_id, feature_info, decode):
 
     # get info for the current feature
     curr_info = feature_info # list of tuples (float, list) where the latter list is of acts and tokens
@@ -193,7 +193,7 @@ def feature_page(feature_info):
     html_ = """<!DOCTYPE html> <html lang="en"> <head> <meta charset="UTF-8"> 
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <link rel="stylesheet" href="tooltip.css"> </head> <body> <br>  """
-    html_ += f"""<span style="color:blue;"> <h2>  Neuron # {i} </h2> </span>"""
+    html_ += f"""<span style="color:blue;"> <h2>  Neuron # {feature_id} </h2> </span>"""
     if len(curr_info) == 0: # the neuron is dead if the list is empty
         html_ += f"""<span style="color:red;"> <h2>  This neuron is dead. </h2> </span> """
         return html_
@@ -204,24 +204,24 @@ def feature_page(feature_info):
         # text is a list of tuples (token, activation value of the token)
         # top_act_this_text is the maximum of all activation values in this text
         # convert the context and token into an HTML text
-        html_ += context_to_html(text, max_act_this_text)
+        html_ += context_to_html(text, max_act_this_text, decode)
 
     # if there are enough examples to create subsample intervals, create them
     if len(curr_info) > num_intervals * interval_exs:
         id, start = 1, 0 # id tracks the subsample interval number, start is the index of the start of current interval in curr_info
         for j, (max_act_this_text, _) in enumerate(curr_info):
-            if id < num_intervals and max_act_this_text < max_act * (num_intervals - i) / num_intervals: # have 
+            if id < num_intervals and max_act_this_text < max_act * (num_intervals - feature_id) / num_intervals: # have 
                 end = j # end is the index of the end of current interval in curr_info
                 exs = random.choices(curr_info[start: end], k=interval_exs) # pick interval_exs random examples from this subsample
                 exs.sort(reverse=True) 
                 html_ += f"""<h3> SUBSBAMPLE INTERVAL {id-1}, MAX ACTIVATION: {exs[0][0]:.4f} </h3> """
                 for max_act_this_text, text in exs: # write to html
-                    html_ += context_to_html(text, max_act_this_text)            
+                    html_ += context_to_html(text, max_act_this_text, decode)            
                 start = end
                 id += 1
 
     ## Plot a histogram of activations
-    histogram_path = os.path.join(autoencoder_dir, autoencoder_subdir, 'pages', f'histogram_{i}.png')
+    histogram_path = os.path.join(autoencoder_dir, autoencoder_subdir, 'pages', f'histogram_{feature_id}.png')
     if make_histogram:
         all_acts = [] # all non-zero activation values for this feature
         for (_, text) in curr_info: # iterate through all examples and collect activation values
@@ -295,4 +295,4 @@ if __name__ == '__main__':
         if i % 100 == 0:
             print(f'working on neurons {i} through {i+99}')
         with open(os.path.join(autoencoder_dir, autoencoder_subdir, 'pages', f'page{i}.html'), 'w') as file:
-            file.write(feature_page(feature_infos[i])) 
+            file.write(feature_page(i, feature_infos[i], decode)) 

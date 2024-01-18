@@ -13,7 +13,6 @@ import tiktoken # needed to decode contexts to text
 import sys 
 from autoencoder import AutoEncoder
 from train import get_text_batch
-from write_html import main_page, tooltip_css, feature_page
 
 ## Add path to the transformer subdirectory as it contains GPT class in model.py
 sys.path.insert(0, '../transformer')
@@ -35,6 +34,7 @@ num_intervals = 11 # number of intervals to divide activations in; = 11 in Anthr
 interval_exs = 5 # number of examples to sample from each interval of activations 
 modes_density_cutoff = 1e-3
 publish_html = False
+make_histogram = False
 
 slice_fn = lambda storage: storage[iter * eval_batch_size: (iter + 1) * eval_batch_size]
 
@@ -142,7 +142,6 @@ if __name__ == '__main__':
             curr_f = batch_f[:, :, i] # (eval_batch_size, block_size)
             # now pick 10 random tokens
             sample_idx = torch.randint(context_length, block_size - context_length, (eval_batch_size, tokens_per_eval_context)) # (eval_batch_size, tokens_per_eval_context)
-
             # evaluate curr_f on these tokens
             curr_f_subset = torch.gather(curr_f, 1, sample_idx) # (eval_batch_size, tokens_per_eval_context)
             for k in range(eval_batch_size):
@@ -156,6 +155,7 @@ if __name__ == '__main__':
 
     with open(os.path.join(autoencoder_dir, autoencoder_subdir, 'feature_infos.pkl'), 'wb') as f:
         pickle.dump(feature_infos, f)
+    print(f'saved feature_infos.pkl in {os.path.join(autoencoder_dir, autoencoder_subdir)}')
 
     if publish_html:
         ## load tokenizer used to train the gpt model
@@ -177,6 +177,9 @@ if __name__ == '__main__':
             enc = tiktoken.get_encoding("gpt2")
             encode = lambda s: enc.encode(s, allowed_special={"<|endoftext|>"})
             decode = lambda l: enc.decode(l)
+
+        ## import functions needed to write html files
+        from write_html import main_page, tooltip_css, feature_page
         
         # create a directory to store pages
         os.makedirs(os.path.join(autoencoder_dir, autoencoder_subdir, 'pages'), exist_ok=True)
@@ -188,11 +191,9 @@ if __name__ == '__main__':
             file.write(main_page(n_features))
         print(f'wrote tooltip.css and main.html in {os.path.join(autoencoder_dir, autoencoder_subdir)}')
 
-        for i in range(n_features):
+        for i, feature_info in enumerate(feature_infos):
             if i % 100 == 0:
                 print(f'working on neurons {i} through {i+99}')
             with open(os.path.join(autoencoder_dir, autoencoder_subdir, 'pages', f'page{i}.html'), 'w') as file:
-                file.write(feature_page(feature_infos[i])) 
-
-        
+                file.write(feature_page(i, feature_infos[i], decode))  
 
