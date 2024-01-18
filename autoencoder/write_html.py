@@ -252,12 +252,12 @@ if __name__ == '__main__':
     config = {k: globals()[k] for k in config_keys} # will be useful for logging
     # -----------------------------------------------------------------------------
 
-    ## load feature_info.pkl
-    print(f'loading feature_info.pkl...')
-    with open(os.path.join(autoencoder_dir, autoencoder_subdir, 'feature_info.pkl'), 'rb') as f:
+    ## load feature_infos.pkl
+    print(f'loading feature_infos.pkl...')
+    with open(os.path.join(autoencoder_dir, autoencoder_subdir, 'feature_infos.pkl'), 'rb') as f:
         feature_infos = pickle.load(f)
     n_features = len(feature_infos)
-    print(f'load successful: feature_info.pkl from {os.path.join(autoencoder_dir, autoencoder_subdir)}')
+    print(f'load successful: feature_infos.pkl from {os.path.join(autoencoder_dir, autoencoder_subdir)}')
 
     ## load tokenizer used to train the gpt model
     # look for the meta pickle in case it is available in the dataset folder
