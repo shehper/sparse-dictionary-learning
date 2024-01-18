@@ -11,9 +11,9 @@ import numpy as np
 import pickle # needed to load meta.pkl
 import tiktoken # needed to decode contexts to text
 import sys 
-import random
 from autoencoder import AutoEncoder
 from train import get_text_batch
+from write_html import main_page, tooltip_css, feature_page
 
 ## Add path to the transformer subdirectory as it contains GPT class in model.py
 sys.path.insert(0, '../transformer')
@@ -37,147 +37,6 @@ modes_density_cutoff = 1e-3
 publish_html = False
 
 slice_fn = lambda storage: storage[iter * eval_batch_size: (iter + 1) * eval_batch_size]
-
-def main_page(n_features):
-    
-    main = """<!DOCTYPE html>
-            <html>
-            <head>
-                <title> Feature Visualization </title>
-                <style>
-                    body {
-                        text-align: center; /* Center content */
-                        font-family: Arial, sans-serif; /* Font style */
-                    }
-                    #pageSlider, #pageNumberInput, button {
-                        margin-top: 20px; /* Space above elements */
-                        margin-bottom: 20px; /* Space below elements */
-                        width: 50%; /* Width of the slider and input box */
-                        max-width: 400px; /* Maximum width */
-                    }
-                    #pageNumberInput, button {
-                        width: auto; /* Auto width for input and button */
-                        padding: 5px 10px; /* Padding inside input box and button */
-                        font-size: 16px; /* Font size */
-                    }
-                    #pageContent {
-                        margin-top: 20px; /* Space above page content */
-                        width: 80%; /* Width of the content area */
-                        margin-left: auto; /* Center the content area */
-                        margin-right: auto; /* Center the content area */
-                    }
-                </style>
-            </head>
-            <body>
-                <h1>Feature browser</h1>
-                <p>Slide to select a neuron number""" + f""" (0 to {n_features-1}) or enter it below:</p>
-                
-                <!-- Slider Input -->
-                <input type="range" id="pageSlider" min="0" max="{n_features-1}" value="0" oninput="updateInputBox(this.value)">
-                <span id="sliderValue">0</span>
-
-                <!-- Input Box and Go Button -->
-                <input type="number" id="pageNumberInput" min="0" max="{n_features-1}" value="0">
-                <button onclick="goToPage()">Go</button>
-
-                <!-- Display Area for Page Content""" + """ -->
-                <div id="pageContent">
-                    <!-- Content will be loaded here -->
-                </div>
-
-                <script>
-                    function updateInputBox(value) {
-                        document.getElementById("sliderValue").textContent = value;
-                        document.getElementById("pageNumberInput").value = value;
-                        loadPageContent(value);
-                    }
-
-                    function goToPage() {
-                        var pageNumber = document.getElementById("pageNumberInput").value;
-                        if (pageNumber >= 0 && pageNumber""" + f""" <= {n_features-1})""" + """ {
-                            document.getElementById("pageSlider").value = pageNumber;
-                            updateInputBox(pageNumber);
-                        } else {
-                            alert("Please enter a valid page number between""" + f""" 0 and {n_features-1}""" + """.");
-                        }
-                    }
-
-                    function loadPageContent(pageNumber) {
-                        var contentDiv = document.getElementById("pageContent");
-
-                        fetch('pages/page' + pageNumber + '.html')
-                            .then(response => {
-                                if (!response.ok) {
-                                    throw new Error('Page not found');
-                                }
-                                return response.text();
-                            })
-                            .then(data => {
-                                contentDiv.innerHTML = data;
-                            })
-                            .catch(error => {
-                                contentDiv.innerHTML = '<p>Error loading page content.</p>';
-                            });
-                    }
-
-                    // Initial load of Page 0 content
-                    loadPageContent(0);
-                    
-                </script>
-            </body>
-            </html>
-
-            """
-    
-    with open(os.path.join(autoencoder_dir, autoencoder_subdir, 'main.html'), 'w') as file:
-        file.write(main)
-
-def tooltip_css():
-    tooltip_css = """/* Style for the tooltip */
-        .tooltip {
-            position: relative;
-            display: inline-block;
-            cursor: pointer;
-        }
-        
-        /* Style for the tooltip content */
-        .tooltip .tooltiptext {
-            visibility: hidden;
-            width: 120px;
-            background-color: #333;
-            color: #fff;
-            text-align: center;
-            border-radius: 6px;
-            padding: 5px;
-            position: absolute;
-            z-index: 1;
-            bottom: 125%;
-            left: 50%;
-            margin-left: -60px;
-            opacity: 0;
-            transition: opacity 0.3s;
-        }
-        
-        /* Show the tooltip content when hovering over the tooltip */
-        .tooltip:hover .tooltiptext {
-            visibility: visible;
-            opacity: 1;
-        }
-        """
-        
-    with open(os.path.join(autoencoder_dir, autoencoder_subdir, f'tooltip.css'), 'w') as file:
-        file.write(tooltip_css) 
-
-page_header = f"""<!DOCTYPE html>
-                <html lang="en">
-                <head>
-                <meta charset="UTF-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <link rel="stylesheet" href="tooltip.css">
-                </head>
-                <body>
-                <br> 
-                """
 
 if __name__ == '__main__':
 
@@ -225,26 +84,6 @@ if __name__ == '__main__':
     if compile:
         gpt = torch.compile(gpt) # requires PyTorch 2.0 (optional)
     config['block_size'] = block_size = gpt.config.block_size
-    
-    ## load tokenizer used to train the gpt model
-    # look for the meta pickle in case it is available in the dataset folder
-    load_meta = False
-    meta_path = os.path.join(os.path.dirname(current_dir), 'transformer', 'data', gpt_ckpt['config']['dataset'], 'meta.pkl')
-    load_meta = os.path.exists(meta_path)
-    if load_meta:
-        print(f"Loading meta from {meta_path}...")
-        with open(meta_path, 'rb') as f:
-            meta = pickle.load(f)
-        # TODO want to make this more general to arbitrary encoder/decoder schemes
-        stoi, itos = meta['stoi'], meta['itos']
-        encode = lambda s: [stoi[c] for c in s]
-        decode = lambda l: ''.join([itos[i] for i in l])
-    else:
-        # ok let's assume gpt-2 encodings by default
-        print("No meta.pkl found, assuming GPT-2 encodings...")
-        enc = tiktoken.get_encoding("gpt2")
-        encode = lambda s: enc.encode(s, allowed_special={"<|endoftext|>"})
-        decode = lambda l: enc.decode(l)
 
     ## Get text data for evaluation 
     X, Y = get_text_batch(text_data, block_size=block_size, batch_size=eval_contexts) # (eval_contexts, block_size) 
@@ -273,15 +112,15 @@ if __name__ == '__main__':
     # The logic should be as follows:
     # For each context we should compute feature activations as in batch_f below
     # Restrict to token_indices #TODO: is this really necessary or should we consider all tokens in each context? What difference does this make conceptually?
-    # Keep a dictionary feature_activations = {i: [] for i in range(n_features)]
+    # Keep a dictionary feature_infos = {i: [] for i in range(n_features)]
     # Whenever a feature activation is non-zero, add it to the list as (feature_activation, token with context around it)
     # At the very end, sample 
     # TODO: I think one thing that I should also try to keep track of is the location of the start of each context in train.bin
     # Why? Well, If I intend to compute correlation between contexts of top activations, this might be needed. 
-    # Otherwise, I could just compute it from my list feature_activations[i].
+    # Otherwise, I could just compute it from my list feature_infos[i].
     # By the way, I should look at MMCS/cosine similarity in the paper. They might already be doing what I am intending to do. 
 
-    feature_activations = {i: [] for i in range(n_features)}
+    feature_infos = {i: [] for i in range(n_features)}
 
     for iter in range(num_eval_batches):
         print(f'{iter}/{num_eval_batches-1} for evaluation')
@@ -313,72 +152,47 @@ if __name__ == '__main__':
                         context = batch_contexts[k, sample_c_idx]
                         f_acts = batch_f[k, sample_c_idx, i]
                         context_acts = [(s, t) for s, t in zip(context, f_acts)]
-                        feature_activations[i] += [(curr_f_subset[k, m].item(), context_acts)]
+                        feature_infos[i] += [(curr_f_subset[k, m].item(), context_acts)]
 
-    with open(os.path.join(autoencoder_dir, autoencoder_subdir, 'feature_info.pkl'), 'wb') as f:
-        pickle.dump(feature_activations, f)
+    with open(os.path.join(autoencoder_dir, autoencoder_subdir, 'feature_infos.pkl'), 'wb') as f:
+        pickle.dump(feature_infos, f)
 
     if publish_html:
+        ## load tokenizer used to train the gpt model
+        # look for the meta pickle in case it is available in the dataset folder
+        load_meta = False
+        meta_path = os.path.join(os.path.dirname(current_dir), 'transformer', 'data', gpt_ckpt['config']['dataset'], 'meta.pkl')
+        load_meta = os.path.exists(meta_path)
+        if load_meta:
+            print(f"Loading meta from {meta_path}...")
+            with open(meta_path, 'rb') as f:
+                meta = pickle.load(f)
+            # TODO want to make this more general to arbitrary encoder/decoder schemes
+            stoi, itos = meta['stoi'], meta['itos']
+            encode = lambda s: [stoi[c] for c in s]
+            decode = lambda l: ''.join([itos[i] for i in l])
+        else:
+            # ok let's assume gpt-2 encodings by default
+            print("No meta.pkl found, assuming GPT-2 encodings...")
+            enc = tiktoken.get_encoding("gpt2")
+            encode = lambda s: enc.encode(s, allowed_special={"<|endoftext|>"})
+            decode = lambda l: enc.decode(l)
+        
+        # create a directory to store pages
         os.makedirs(os.path.join(autoencoder_dir, autoencoder_subdir, 'pages'), exist_ok=True)
-        main_page(n_features)
-        tooltip_css()
+        # write a helper css file tooltip.css in autoencoder_subdir
+        with open(os.path.join(autoencoder_dir, autoencoder_subdir, f'tooltip.css'), 'w') as file:
+            file.write(tooltip_css()) 
+        # write the main page for html
+        with open(os.path.join(autoencoder_dir, autoencoder_subdir, 'main.html'), 'w') as file:
+            file.write(main_page(n_features))
+        print(f'wrote tooltip.css and main.html in {os.path.join(autoencoder_dir, autoencoder_subdir)}')
 
         for i in range(n_features):
-            print(f'writing html page for neuron number {i}')
-            feature_activations[i].sort(reverse=True) # sort the list of activations in a descending order
-            top_acts = feature_activations[i][:k] # get top k elements
-                
-            html_ = page_header
-            html_ += f"""<span style="color:blue;"> <h2>  Neuron # {i} </h2> </span>"""
-            if len(top_acts) == 0:
-                html_ += f"""<span style="color:red;"> <h2>  This neuron is dead. </h2> </span> """
-            else:
-                html_ += f"""<h3> TOP ACTIVATIONS, MAX ACTIVATION: {top_acts[0][0]:.4f} </h3> """
-                for feature_act, context_acts in top_acts:
-                    for token, act in context_acts:
-                        if act == 0:
-                            html_ += f"{decode([token.item()])}"
-                        else: 
-                            html_ +=  f"""<div class="tooltip">
-                                            <span style="color:red;"> {decode([token.item()])} </span>
-                                            <span class="tooltiptext"> Activation: {act:.4f} </span>
-                                        </div>"""
-                    html_ += "<br>"
-
-            curr_data = feature_activations[i] # sorted list of tuples (float, list) where the latter list is of acts and tokens
-            
-            if len(curr_data) > num_intervals * interval_exs: # we must have enough examples to sample from different intervals
-                top_val = curr_data[0][0]
-                splits = [i * top_val / num_intervals for i in range(num_intervals, 0, -1)] # get bounds 
-                index = 1
-                start, end = 0, 0
-                for j, (act, _) in enumerate(curr_data):
-                    if index < len(splits) and act < splits[index]:
-                        end = j
-                        out = random.choices(curr_data[start: end], k=interval_exs)
-                        out.sort(reverse=True)
-                        html_ += f"""<h3> SUBSBAMPLE INTERVAL {index-1}, MAX ACTIVATION: {out[0][0]:.4f} </h3> """
-                        for feature_act, context_acts in out:
-                            for token, act in context_acts:
-                                if act == 0:
-                                    html_ += f"{decode([token.item()])}"
-                                else: 
-                                    html_ +=  f"""<div class="tooltip">
-                                                    <span style="color:red;"> {decode([token.item()])} </span>
-                                                    <span class="tooltiptext"> Activation: {act:.4f} </span>
-                                                </div>"""
-                            html_ += "<br>"
-                        
-                        start = end
-                        index += 1
-            
-            html_ += """</body>
-                        </html>"""
+            if i % 100 == 0:
+                print(f'working on neurons {i} through {i+99}')
             with open(os.path.join(autoencoder_dir, autoencoder_subdir, 'pages', f'page{i}.html'), 'w') as file:
-                file.write(html_) 
-
-
-        # TODO: plot histogram of feature activations
+                file.write(feature_page(feature_infos[i])) 
 
         
 
