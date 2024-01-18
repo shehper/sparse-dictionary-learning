@@ -35,6 +35,9 @@ interval_exs = 5 # number of examples to sample from each interval of activation
 modes_density_cutoff = 1e-3
 publish_html = False
 make_histogram = False
+k = 15 # number of top activations
+num_intervals = 11 # number of intervals to divide activations in; = 11 in Anthropic's work
+interval_exs = 5 # number of examples to sample from each interval of activations 
 
 slice_fn = lambda storage: storage[iter * eval_batch_size: (iter + 1) * eval_batch_size]
 
@@ -195,5 +198,5 @@ if __name__ == '__main__':
             if i % 100 == 0:
                 print(f'working on neurons {i} through {i+99}')
             with open(os.path.join(autoencoder_dir, autoencoder_subdir, 'pages', f'page{i}.html'), 'w') as file:
-                file.write(feature_page(i, feature_infos[i], decode))  
+                file.write(feature_page(i, feature_infos[i], decode, make_histogram, k, num_intervals, interval_exs, autoencoder_dir, autoencoder_subdir))  
 

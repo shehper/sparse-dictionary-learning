@@ -13,17 +13,6 @@ import tiktoken # needed to decode contexts to text
 import random
 import matplotlib.pyplot as plt
 
-# hyperparameters --- same as train_sae.py except a few maybe # TODO: do I need all of them?
-device = 'cpu' # change it to cpu
-seed = 1442
-dataset = 'openwebtext' 
-autoencoder_dir = 'out_autoencoder' # directory containing weights of various trained autoencoder models
-autoencoder_subdir = '' # subdirectory containing the specific model to consider
-context_length = 10 # number of tokens to print/save on either side of the token with feature activation. 
-k = 15 # number of top activations
-num_intervals = 11 # number of intervals to divide activations in; = 11 in Anthropic's work
-interval_exs = 5 # number of examples to sample from each interval of activations 
-make_histogram = False
 
 ## define a function that converts tokens to html text
 def context_to_html(text, max_act_this_text, decode):
@@ -183,7 +172,7 @@ def tooltip_css():
         
     return tooltip_css
 
-def feature_page(feature_id, feature_info, decode):
+def feature_page(feature_id, feature_info, decode, make_histogram, k, num_intervals, interval_exs, autoencoder_dir, autoencoder_subdir):
 
     # get info for the current feature
     curr_info = feature_info # list of tuples (float, list) where the latter list is of acts and tokens
@@ -246,6 +235,17 @@ def feature_page(feature_id, feature_info, decode):
 
 if __name__ == '__main__':
 
+    # hyperparameters --- same as train_sae.py except a few maybe # TODO: do I need all of them?
+    device = 'cpu' # change it to cpu
+    seed = 1442
+    dataset = 'openwebtext' 
+    autoencoder_dir = 'out_autoencoder' # directory containing weights of various trained autoencoder models
+    autoencoder_subdir = '' # subdirectory containing the specific model to consider
+    k = 15 # number of top activations
+    num_intervals = 11 # number of intervals to divide activations in; = 11 in Anthropic's work
+    interval_exs = 5 # number of examples to sample from each interval of activations 
+    make_histogram = False
+
     # -----------------------------------------------------------------------------
     config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
     exec(open('configurator.py').read()) # overrides from command line or config file
@@ -295,4 +295,4 @@ if __name__ == '__main__':
         if i % 100 == 0:
             print(f'working on neurons {i} through {i+99}')
         with open(os.path.join(autoencoder_dir, autoencoder_subdir, 'pages', f'page{i}.html'), 'w') as file:
-            file.write(feature_page(i, feature_infos[i], decode)) 
+            file.write(feature_page(i, feature_infos[i], decode, make_histogram, k, num_intervals, interval_exs, autoencoder_dir, autoencoder_subdir)) 
