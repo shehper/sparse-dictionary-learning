@@ -141,12 +141,18 @@ if __name__ == '__main__':
         batch_token_indices = slice_fn(token_indices) # (eval_batch_size, tokens_per_eval_context)
         batch_contexts = slice_fn(X) # (eval_batch_size, block_size)
 
+        # TODO: this is picking different subset of tokens for different features. 
+        # Instead replace the outer for loop with 
+        # sample_idx = torch.randint(context_length, block_size - context_length, (eval_batch_size, tokens_per_eval_context))
+        # batch_f_subset = torch.gather(batch_f, 1, sample_idx.unsqueeze(dim=2).expand(-1, -1, n_features))
+            
         for i in range(n_features):
             curr_f = batch_f[:, :, i] # (eval_batch_size, block_size)
             # now pick 10 random tokens
             sample_idx = torch.randint(context_length, block_size - context_length, (eval_batch_size, tokens_per_eval_context)) # (eval_batch_size, tokens_per_eval_context)
             # evaluate curr_f on these tokens
             curr_f_subset = torch.gather(curr_f, 1, sample_idx) # (eval_batch_size, tokens_per_eval_context)
+            # for each token in sample_idx, get the token and feature activation for that token 
             for k in range(eval_batch_size):
                 for m in range(tokens_per_eval_context):
                     if curr_f_subset[k, m] != 0:
