@@ -156,9 +156,9 @@ if __name__ == '__main__':
                         context_acts = [(s, t) for s, t in zip(context, f_acts)]
                         feature_infos[i] += [(curr_f_subset[k, m].item(), context_acts)]
 
-    with open(os.path.join(autoencoder_dir, autoencoder_subdir, 'feature_infos.pkl'), 'wb') as f:
-        pickle.dump(feature_infos, f)
-    print(f'saved feature_infos.pkl in {os.path.join(autoencoder_dir, autoencoder_subdir)}')
+    #with open(os.path.join(autoencoder_dir, autoencoder_subdir, 'feature_infos.pkl'), 'wb') as f:
+    #    pickle.dump(feature_infos, f)
+    #print(f'saved feature_infos.pkl in {os.path.join(autoencoder_dir, autoencoder_subdir)}')
 
     if publish_html:
         ## load tokenizer used to train the gpt model
