@@ -66,6 +66,7 @@ def get_text_batch(data, block_size, batch_size):
     y = torch.stack([torch.from_numpy((data[i+1:i+1+block_size]).astype(np.int64)) for i in ix])
     return x, y
 
+#TODO: load_data should be a method of a class. The class attributes include offset, current_partition and current_partition_index.
 def load_data(step, batch_size, current_partition_index, current_partition, n_partitions, examples_per_partition, offset):
     """A custom data loader specific for our needs.  
     It assumes that data is stored in multiple files in the 'sae_data' folder. 

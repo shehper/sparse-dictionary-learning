@@ -138,7 +138,7 @@ For example, please see the HTML files [high_density_neurons.html](https://shehp
 
 3. Almost 1/3rd of the ~1700 of neurons in high-density cluster were single-token features. (You may CTRL+F/CMD+F "single-token" in [high_density_neurons.html](https://shehper.github.io/monosemantic/autoencoder/out_autoencoder/1704783101.13-autoencoder-openwebtext/high_density_neurons.html) to look at these single-token features.)
 
-4. When sorted by highest activation value, several of the top neurons seemed to single-token features. 
+4. When sorted by highest activation value, several of the top neurons seemed to be single-token features. 
 
 5. OpenWebText dataset is mostly monolingual, (I have not computed the exact percentage of English tokens in it yet) but the autoencoder learns features on texts of other languages. For example, the following neurons fire on specific languages or scripts. 3656: Spanish, 1305: Scandinavian, 77: South Slavic languages, 1682: Greek script, and 2601 and 215: Cyrilic. 
 
