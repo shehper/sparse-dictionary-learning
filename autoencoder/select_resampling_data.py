@@ -2,7 +2,7 @@ import torch
 import os
 data_dir = 'sae_data'
 out_file = 'data_for_resampling_neurons.pt'
-num_examples = 4*819200 
+num_examples = 4*819200 # ~ 3.3M
 n_ffwd = 512
 
 # -----------------------------------------------------------------------------
@@ -20,8 +20,8 @@ out = torch.tensor([], dtype=torch.float16)
 for partition_index in range(total_partitions):
     partition = torch.load(f'sae_data/sae_data_{partition_index}.pt') # current partition
     print(f'working on partition # {partition_index}')
-    examples_per_partition = partition.shape[0]
-    ix = torch.randint(examples_per_partition, (num_examples,)) # pick examples_per_partition examples from current partition
+    partition_size = partition.shape[0]
+    ix = torch.randint(partition_size, (examples_per_partition,)) # pick examples_per_partition examples from current partition
     out = torch.cat([out, partition[ix]]) # include them in output tensor 
     print(f'Length of data after working on partition # {partition_index} = {out.shape[0]}')
 

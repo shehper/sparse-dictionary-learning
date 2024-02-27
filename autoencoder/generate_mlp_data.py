@@ -14,11 +14,11 @@ from model import GPTConfig, GPT
 
 ## define some parameters; these can be overwritten from command line
 device = 'cpu'
-seed = 1442
-total_contexts = 4000000 
+seed = 0
+total_contexts = int(2e6) # should take 770 GB 
 contexts_per_batch = 500
 tokens_per_context = 200 
-convert_to_f16 = True # save activations in Half dtype instead of Float
+convert_to_f16 = False # save activations in Half dtype instead of Float
 dataset = 'openwebtext'
 model_dir = 'out' # ignored if init_from is not 'resume'
 n_files = 20 # number of files in which data will be saved 
@@ -93,10 +93,12 @@ for batch in range(num_batches):
           memory available: {psutil.virtual_memory().available / (1024**3):.2f} GB; memory usage: {psutil.virtual_memory().percent}%")
    
 ## save sae_data in n_files files
-os.makedirs('sae_data', exist_ok=True)
+os.makedirs(os.path.join(current_dir, 'sae_data'), exist_ok=True)
 examples_per_file = total_contexts * tokens_per_context // n_files
+
+# now save the data in n_files files. Note file names are sae_data_{file_count+i}.
 for i in range(n_files):
     # notice .clone(); else torch.save would need the storage required for the whole tensor sae_data 
     # https://github.com/pytorch/pytorch/issues/1995
-    torch.save(sae_data[i * examples_per_file: (i+1) * examples_per_file].clone(), f'sae_data/sae_data_{i}.pt')
-    print(f'saved sae_data_{i}.pt in sae_data')
+    torch.save(sae_data[i * examples_per_file: (i+1) * examples_per_file].clone(), f'sae_data/sae_data_{seed * n_files + i}.pt')
+    print(f'saved sae_data_{seed * n_files + i}.pt in sae_data')
