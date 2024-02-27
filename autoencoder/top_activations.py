@@ -32,7 +32,7 @@ context_length = 4 # number of tokens to print/save on either side of the token 
 k = 20 # number of top activations
 num_intervals = 11 # number of intervals to divide activations in; = 11 in Anthropic's work
 interval_exs = 5 # number of examples to sample from each interval of activations 
-modes_density_cutoff = 1e-3
+modes_density_cutoff = 1e-3 # TODO: remove this; it is not being used anymor
 publish_html = False
 make_histogram = False
 k = 15 # number of top activations
