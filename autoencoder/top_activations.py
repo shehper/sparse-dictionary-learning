@@ -49,6 +49,9 @@ def sample_tokens(*args, fn_seed=0, V=num_tokens_either_side, M=eval_tokens):
     for tensor in args[1:]:
         assert tensor.shape[:2] == (B, T), "all tensors in input must have the same shape along the first two dimensions"
 
+    # window size
+    W = 2 * V + 1
+
     torch.manual_seed(fn_seed)
     # select indices for tokens
     token_idx_BM = torch.randint(V, T - V, (B, M))
@@ -59,10 +62,11 @@ def sample_tokens(*args, fn_seed=0, V=num_tokens_either_side, M=eval_tokens):
 
     result_tensors = []
     for tensor in args:
-        if tensor.ndim == 3:  # For (B, T, F) tensors such as MLP activations
-            sliced_tensor = tensor[batch_indices_BMW, window_idx_BMW, :]
+        if tensor.ndim == 3:  # For (B, T, H) tensors such as MLP activations
+            H = tensor.shape[2] # number of features / hidden dimension of autoencoder, hence abbreviated to H
+            sliced_tensor = tensor[batch_indices_BMW, window_idx_BMW, :].view(-1, W, H)
         elif tensor.ndim == 2:  # For (B, T) tensors such as inputs to Transformer
-            sliced_tensor = tensor[batch_indices_BMW, window_idx_BMW]
+            sliced_tensor = tensor[batch_indices_BMW, window_idx_BMW].view(-1, W)
         else:
             raise ValueError("Tensor dimensions not supported. Only 2D and 3D tensors are allowed.")
         result_tensors.append(sliced_tensor)
@@ -119,9 +123,10 @@ if __name__ == '__main__':
 
     ## select X, Y from text data
     # as openwebtext and shakespeare_char are small datasets, use the entire text data. split it into len(text_data)//block_size contexts
+    T = block_size
     if dataset in ["openwebtext", "shakespeare_char"]:
-        X_NT = torch.stack([torch.from_numpy((text_data[i:i+block_size]).astype(np.int64)) for i in range(len(text_data)//block_size)])
-        # TODO: note that we don't need y_BT/y_NT unless we compute feature ablations
+        X_NT = torch.stack([torch.from_numpy((text_data[i*T: (i+1)*T]).astype(np.int64)) for i in range(len(text_data)//T)])
+        # TODO: note that we don't need y_BT/y_NT unless we compute feature ablations which we do plan to compute 
         # Y_NT = torch.stack([torch.from_numpy((text_data[i+1:i+1+block_size]).astype(np.int64)) for i in range(len(text_data)//block_size)])
         num_contexts = X_NT.shape[0] # overwrite num_contexts = N
     else:
@@ -129,18 +134,18 @@ if __name__ == '__main__':
                                     In this case, use get_text_batch function to randomly select num_contexts contexts""") # TODO
 
     ## compute and store MLP activations 
-    data_NMW = TensorDict({
+    data_MW = TensorDict({
         # "mlp_acts": torch.empty(num_contexts, eval_tokens, 2 * num_tokens_either_side + 1, n_ffwd),
-        "tokens": torch.empty(num_contexts, eval_tokens, 2 * num_tokens_either_side + 1),
-        "feature_acts": torch.empty(num_contexts, eval_tokens, 2 * num_tokens_either_side + 1, n_features),
-    }, batch_size=[num_contexts, eval_tokens, 2 * num_tokens_either_side + 1]
+        "tokens": torch.empty(num_contexts * eval_tokens, 2 * num_tokens_either_side + 1),
+        "feature_acts": torch.empty(num_contexts * eval_tokens, 2 * num_tokens_either_side + 1, 20), # TODO: fix it to n_features
+    }, batch_size=[num_contexts * eval_tokens, 2 * num_tokens_either_side + 1]
     )
     # TODO: might have to process x < n_features features at a time. 
     # TODO: Do B and M really need to be separate dimensions? 
 
     num_batches = num_contexts // eval_batch_size + (num_contexts % eval_batch_size != 0)
     print(f"We will compute MLP activations in {num_batches} batches")
-    for iter in range(num_batches):    
+    for iter in range(num_batches): 
         
         print(f"Computing MLP activations for batch # {iter+1}/{num_batches}")
 
@@ -152,20 +157,62 @@ if __name__ == '__main__':
 
         # compute feature activations 
         feature_acts_BTH = autoencoder.get_feature_acts(mlp_acts_BTF)
-        # assert feature_acts_BTH.shape == (eval_batch_size, block_size, n_features), "an issue"
 
         # TODO: If there are memory issues, then at this stage, I can cut down feature_acts_BTH to only 
         # certain components along the last dimension  
+        # indeed ~ 1e7 * 90 * 4e3 float32 elements would take ~13 TB of memory
+        # but if I cut it down by 100, that's 130 GB of memory which might be more managable for me. 
+        feature_acts_BTH = feature_acts_BTH[:, :, :20]
         
         # sample tokens and store feature activations only for the sampled tokens and windows around them
         # flatten the first two dimensions # TODO: this is on trial basis for now 
-        x_BMW, feature_acts_BMWH = sample_tokens(x_BT, feature_acts_BTH, fn_seed=seed+iter)
-        data_NMW["tokens"][iter * eval_batch_size: (iter + 1) * eval_batch_size] = x_BMW
-        data_NMW["feature_acts"][iter * eval_batch_size: (iter + 1) * eval_batch_size] = feature_acts_BMWH
-        print(x_BMW.shape)
-        print(x_BMW)
-        print(x_BMW.view(-1, x_BMW.shape[-1]))
-        raise
+        x_MW, feature_acts_MWH = sample_tokens(x_BT, feature_acts_BTH, fn_seed=seed+iter) # M = B * eval_tokens
+        data_MW["tokens"][iter * eval_batch_size * eval_tokens: (iter + 1) * eval_batch_size * eval_tokens] = x_MW
+        data_MW["feature_acts"][iter * eval_batch_size * eval_tokens: (iter + 1) * eval_batch_size * eval_tokens] = feature_acts_MWH
+
+    print(f'computing top k feature activations')
+    # indices are the indices in range [0, num_contexts * eval_tokesn - 1] where each feature is most active (top k values)
+    # at the middle location of the window
+    values_kH, indices_kH = torch.topk(data_MW["feature_acts"][:, num_tokens_either_side, :], k=k, dim=0)
+    top_feature_acts_kWH = torch.stack([data_MW["feature_acts"][indices_kH[:, i], :, i] for i in range(20)], dim=-1) 
+    topk_windows_kWH = data_MW["tokens"][indices_kH].transpose(dim0=1, dim1=2)
+
+    assert top_feature_acts_kWH.shape == (k, 2 * num_tokens_either_side + 1, 20), "top feature activations do not have the right shape"
+    assert topk_windows_kWH.shape == (k, 2 * num_tokens_either_side + 1, 20), "windows for top feature activations do not have the right shape"
+
+    for i in range(20):
+        print(f'printing top activations for feature # {i}')
+        for j in range(k):
+            print(f'activation # {j}: {decode(topk_windows_kWH[j, :, i].tolist())}; activation values: {top_feature_acts_kWH[j, :, i]}, mid value: {top_feature_acts_kWH[j, num_tokens_either_side, i]}')
+
+    # TODO: why does the same token and context appear many a times but with different activation values? 
+    # make sure the algebra for calculation of top k feature activations and windows is correct. 
+
+    # for i in range(n_features):
+    #     if topk_feature_acts[0] =
+    #     print(f'printing top activations for feature # {i}')
+    # TODO: should redefine a variable named 'window_size'
+
+    # TODO: I think that 
+    # data_MW["tokens"][topk_indices].transpose(dim0=1, dim1=2) will give (k, W, H)
+    # of k top windows for all features
+    # torch.stack([data_MW["feature_acts"][indices[:, i], :, i] for i in range(a.shape[-1])], dim=-1) 
+    # will also give a tensor of shape (k, W, H).
+    # this tensor will have feature activations for topk windows of all H features.
+    ## 
+
+    ## subsample intervals
+    #for feature_id in range(n_features):
+        # perhaps sort all the activations by the middle index
+        # now sample at intervals
+
+    # # plot a histogram
+    # for feature_id in range(n_features):
+    #     num_nonzero_acts = torch.count_nonzero(data_MW["feature_acts"][:, :, feature_id])
+    #     feature_density = num_nonzero_acts / (data_MW["tokens"].numel())
+    #     # TODO: Include code to write feature page and plot a histogram
+
+    # raise
 
     # Logic so far and what's ahead
     # we have contexts on which we compute MLP activations and feature activations
@@ -180,7 +227,7 @@ if __name__ == '__main__':
     # and iterate over the 0th dimension,
     # 
 
-    print(torch.topk(data_NMW["feature_acts"], k=5, dim=-1))
+    # print(torch.topk(data_MW["feature_acts"], k=5, dim=-1))
     # print(data_NMW["tokens"])
     # print(data_NMW["feature_acts"])
     # print(data_NMW["tokens"].shape)
