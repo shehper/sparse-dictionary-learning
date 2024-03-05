@@ -30,9 +30,10 @@ num_contexts = 10000 # 10 million in anthropic paper; but we will choose the ent
 eval_tokens = 10 # same as Anthropic's paper; number of tokens in each context on which feature activations will be computed # M
 num_tokens_either_side = 4 # number of tokens to print/save on either side of the token with feature activation. 
 # let 2 * num_tokens_either_side + 1 be denoted by W.
+n_features_per_phase = 20 # due to memory constraints, it's useful to process features in phases. 
 k = 10 # number of top activations for each feature; 20 in Anthropic's visualization
-num_intervals = 11 # number of intervals to divide activations in; = 11 in Anthropic's work
-interval_exs = 5 # number of examples to sample from each interval of activations 
+n_intervals = 12 # number of intervals to divide activations in; = 12 in Anthropic's work
+n_exs_per_interval = 5 # number of examples to sample from each interval of activations 
 modes_density_cutoff = 1e-3 # TODO: remove this; it is not being used anymor
 publish_html = False
 make_histogram = False
@@ -52,9 +53,12 @@ def sample_tokens(*args, fn_seed=0, V=num_tokens_either_side, M=eval_tokens):
     # window size
     W = 2 * V + 1
 
+    # TODO: Here seems to denote the number of eval_tokens but later I use M to denote 
+    # B * eval_tokens. Make this consistent. 
+
     torch.manual_seed(fn_seed)
-    # select indices for tokens
-    token_idx_BM = torch.randint(V, T - V, (B, M))
+    # select indices for tokens --- pick M elements without replacement in each batch 
+    token_idx_BM = torch.stack([V + torch.randperm(T - 2*V)[:M] for _ in range(B)], dim=0)
     # include windows
     window_idx_BMW = token_idx_BM.unsqueeze(-1) + torch.arange(-V, V + 1)
     # obtain batch indices
@@ -121,6 +125,24 @@ if __name__ == '__main__':
         gpt = torch.compile(gpt) # requires PyTorch 2.0 (optional)
     config['block_size'] = block_size = gpt.config.block_size # T
 
+    load_meta = False
+    meta_path = os.path.join(os.path.dirname(current_dir), 'transformer', 'data', gpt_ckpt['config']['dataset'], 'meta.pkl')
+    load_meta = os.path.exists(meta_path)
+    if load_meta:
+        print(f"Loading meta from {meta_path}...")
+        with open(meta_path, 'rb') as f:
+            meta = pickle.load(f)
+        # TODO want to make this more general to arbitrary encoder/decoder schemes
+        stoi, itos = meta['stoi'], meta['itos']
+        encode = lambda s: [stoi[c] for c in s]
+        decode = lambda l: ''.join([itos[i] for i in l])
+    else:
+        # ok let's assume gpt-2 encodings by default
+        print("No meta.pkl found, assuming GPT-2 encodings...")
+        enc = tiktoken.get_encoding("gpt2")
+        encode = lambda s: enc.encode(s, allowed_special={"<|endoftext|>"})
+        decode = lambda l: enc.decode(l)
+
     ## select X, Y from text data
     # as openwebtext and shakespeare_char are small datasets, use the entire text data. split it into len(text_data)//block_size contexts
     T = block_size
@@ -137,7 +159,7 @@ if __name__ == '__main__':
     data_MW = TensorDict({
         # "mlp_acts": torch.empty(num_contexts, eval_tokens, 2 * num_tokens_either_side + 1, n_ffwd),
         "tokens": torch.empty(num_contexts * eval_tokens, 2 * num_tokens_either_side + 1),
-        "feature_acts": torch.empty(num_contexts * eval_tokens, 2 * num_tokens_either_side + 1, 20), # TODO: fix it to n_features
+        "feature_acts": torch.empty(num_contexts * eval_tokens, 2 * num_tokens_either_side + 1, n_features_per_phase), # TODO: fix it to n_features
     }, batch_size=[num_contexts * eval_tokens, 2 * num_tokens_either_side + 1]
     )
     # TODO: might have to process x < n_features features at a time. 
@@ -162,29 +184,110 @@ if __name__ == '__main__':
         # certain components along the last dimension  
         # indeed ~ 1e7 * 90 * 4e3 float32 elements would take ~13 TB of memory
         # but if I cut it down by 100, that's 130 GB of memory which might be more managable for me. 
-        feature_acts_BTH = feature_acts_BTH[:, :, :20]
+        feature_acts_BTH = feature_acts_BTH[:, :, :n_features_per_phase]
+
+        # TODO: if I am going to process features in phases, I may as well perform a forward pass only for the features
+        # under investigation.
+        # TODO: include a for loop here over various phases. In phase i, we will not slice feature_acts_BTH as
+        # :n_features_per_phase but rather with i * n_features_per_phase : (i + 1) * n_features_per_phase.
         
         # sample tokens and store feature activations only for the sampled tokens and windows around them
         # flatten the first two dimensions # TODO: this is on trial basis for now 
-        x_MW, feature_acts_MWH = sample_tokens(x_BT, feature_acts_BTH, fn_seed=seed+iter) # M = B * eval_tokens
-        data_MW["tokens"][iter * eval_batch_size * eval_tokens: (iter + 1) * eval_batch_size * eval_tokens] = x_MW
-        data_MW["feature_acts"][iter * eval_batch_size * eval_tokens: (iter + 1) * eval_batch_size * eval_tokens] = feature_acts_MWH
+        # TODO: what is M? If M = B * eval_tokens,
+        # then it cannot also be N * eval_tokens. <-- this would mean a change in name of data_MW.
+        # 
+        x_PW, feature_acts_PWH = sample_tokens(x_BT, feature_acts_BTH, fn_seed=seed+iter) # P = B * eval_tokens
+        data_MW["tokens"][iter * eval_batch_size * eval_tokens: (iter + 1) * eval_batch_size * eval_tokens] = x_PW
+        data_MW["feature_acts"][iter * eval_batch_size * eval_tokens: (iter + 1) * eval_batch_size * eval_tokens] = feature_acts_PWH
 
+    ## Get top k feature activations
     print(f'computing top k feature activations')
-    # indices are the indices in range [0, num_contexts * eval_tokesn - 1] where each feature is most active (top k values)
-    # at the middle location of the window
     values_kH, indices_kH = torch.topk(data_MW["feature_acts"][:, num_tokens_either_side, :], k=k, dim=0)
-    top_feature_acts_kWH = torch.stack([data_MW["feature_acts"][indices_kH[:, i], :, i] for i in range(20)], dim=-1) 
-    topk_windows_kWH = data_MW["tokens"][indices_kH].transpose(dim0=1, dim1=2)
+    top_feature_acts_kWH = torch.stack([data_MW["feature_acts"][indices_kH[:, i], :, i] for i in range(n_features_per_phase)], dim=-1) 
+    top_windows_kWH = data_MW["tokens"][indices_kH].transpose(dim0=1, dim1=2)
 
-    assert top_feature_acts_kWH.shape == (k, 2 * num_tokens_either_side + 1, 20), "top feature activations do not have the right shape"
-    assert topk_windows_kWH.shape == (k, 2 * num_tokens_either_side + 1, 20), "windows for top feature activations do not have the right shape"
+    assert top_feature_acts_kWH.shape == (k, 2 * num_tokens_either_side + 1, n_features_per_phase), "top feature activations do not have the right shape"
+    assert top_windows_kWH.shape == (k, 2 * num_tokens_either_side + 1, n_features_per_phase), "windows for top feature activations do not have the right shape"
 
-    for i in range(20):
-        print(f'printing top activations for feature # {i}')
-        for j in range(k):
-            print(f'activation # {j}: {decode(topk_windows_kWH[j, :, i].tolist())}; activation values: {top_feature_acts_kWH[j, :, i]}, mid value: {top_feature_acts_kWH[j, num_tokens_either_side, i]}')
+    M = num_contexts * eval_tokens
+    W = 2 * num_tokens_either_side + 1
+    I = n_intervals
+    X = n_exs_per_interval
+    ## Sample intervals
+    for feature in range(n_features_per_phase):
+        curr_feature_acts_MW = data_MW["feature_acts"][:, :, feature]
+        mid_token_feature_acts_M = curr_feature_acts_MW[:, num_tokens_either_side]
+        sorted_acts_M, sorted_indices_M = torch.sort(mid_token_feature_acts_M, descending=True)
+        non_zero_acts = torch.count_nonzero(mid_token_feature_acts_M)
+        if non_zero_acts < I * X:
+            continue
+        sampled_indices_IX = torch.stack([j * non_zero_acts // I + torch.randperm(non_zero_acts // I)[:X].sort()[0] for j in range(I)], dim=0)
+        original_indices_IX = sorted_indices_M[sampled_indices_IX]
+        sampled_acts_IXW = curr_feature_acts_MW[original_indices_IX]
+        sampled_tokens_IXW = data_MW["tokens"][original_indices_IX]
 
+        assert curr_feature_acts_MW.shape == (M, W)
+        assert mid_token_feature_acts_M.shape == (M, )
+        assert sorted_acts_M.shape == (M, )
+        assert sorted_indices_M.shape == (M, )
+        assert non_zero_acts.shape == ()
+        assert sampled_indices_IX.shape == (I, X)
+        assert original_indices_IX.shape == (I, X)
+        assert sampled_acts_IXW.shape == (I, X, W)
+        assert sampled_tokens_IXW.shape == (I, X, W)
+
+        
+
+
+        # TODO: replace torch.randint by torch.randperm so that we can sample without replacement?
+
+
+        print(f'printing subsample activations for feature # {feature}')
+        for j in range(12):
+            print(f'printing subsample interval # {j}')
+            for k in range(5):
+                print(f'example # {k + 1}: {decode(sampled_tokens_IXW[j, k].tolist())}, \
+                      activations: {sampled_acts_IXW[j, k]}')
+
+
+
+    ## USING FOR LOOP
+    # for each feature:
+    #   sort all the activations in a descending order
+    #   count the number of non-zero elements
+    #   divide the number of non-zero elements by 11
+    #   in each split induced by this division, pick 5 elements at random
+    #   but how do we use it to get indices for the rows of tokens?
+
+    # remember that feature_acts has shape MWH
+    # tokens has shape MW
+    # TODO: how do I make the two work together?
+    # well, it might be easier to do it one feature at a time
+    # for each feature, look at the middle point of the window
+    # and sort
+    # 
+
+    # for i in range(n_features_per_phase):
+    #     print(f'printing top activations for feature # {i}')
+    #     for j in range(k):
+    #         print(f'activation # {j}: {decode(topk_windows_kWH[j, :, i].tolist())}; mid value: {top_feature_acts_kWH[j, num_tokens_either_side, i]}, index: {indices_kH[j, i]}')
+
+
+
+    # List of things to record: 
+    # 1. neuron alignment
+    # 2. correlated neurons
+    # 3. subsample activations
+    # 4. histogram
+    # 5. feature ablations (positive logits, negative logits, etc.)
+
+    # #1 and #2 can be done later. 
+    # #3, # 4 and # 5 are more important.
+    # let's think about #3 first.
+
+
+
+    #    activation values: {top_feature_acts_kWH[j, :, i]}, \
     # TODO: why does the same token and context appear many a times but with different activation values? 
     # make sure the algebra for calculation of top k feature activations and windows is correct. 
 
