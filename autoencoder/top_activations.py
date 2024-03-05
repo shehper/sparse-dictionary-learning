@@ -39,7 +39,7 @@ make_histogram = False
 
 slice_fn = lambda data: data[iter * eval_batch_size: (iter + 1) * eval_batch_size]
 
-def sample_tokens(*args, fn_seed=0):
+def sample_tokens(*args, fn_seed=0, V=num_tokens_either_side, M=eval_tokens):
     # given tensors each of shape (B, T, ...), return tensors on randomly selected tokens
     # and windows around them. shape of output: (B, M, W, ...)
     
@@ -50,21 +50,18 @@ def sample_tokens(*args, fn_seed=0):
         assert tensor.shape[:2] == (B, T), "all tensors in input must have the same shape along the first two dimensions"
 
     torch.manual_seed(fn_seed)
-    V = num_tokens_either_side # W = 2 * V + 1
-    M = eval_tokens
     # select indices for tokens
     token_idx_BM = torch.randint(V, T - V, (B, M))
     # include windows
     window_idx_BMW = token_idx_BM.unsqueeze(-1) + torch.arange(-V, V + 1)
     # obtain batch indices
     batch_indices_BMW = torch.arange(B).view(-1, 1, 1).expand_as(window_idx_BMW)
-    # print(args[1][batch_indices_BMW, window_idx_BMW, :])
 
     result_tensors = []
     for tensor in args:
-        if tensor.ndim == 3:  # For (B, T, F) tensors
+        if tensor.ndim == 3:  # For (B, T, F) tensors such as MLP activations
             sliced_tensor = tensor[batch_indices_BMW, window_idx_BMW, :]
-        elif tensor.ndim == 2:  # For (B, T) tensors
+        elif tensor.ndim == 2:  # For (B, T) tensors such as inputs to Transformer
             sliced_tensor = tensor[batch_indices_BMW, window_idx_BMW]
         else:
             raise ValueError("Tensor dimensions not supported. Only 2D and 3D tensors are allowed.")
@@ -133,36 +130,64 @@ if __name__ == '__main__':
 
     ## compute and store MLP activations 
     data_NMW = TensorDict({
-        "mlp_acts": torch.empty(num_contexts, eval_tokens, 2 * num_tokens_either_side + 1, n_ffwd),
+        # "mlp_acts": torch.empty(num_contexts, eval_tokens, 2 * num_tokens_either_side + 1, n_ffwd),
         "tokens": torch.empty(num_contexts, eval_tokens, 2 * num_tokens_either_side + 1),
-        "feature_acts": torch.empty(num_contexts, eval_tokens, 2 * num_tokens_either_side + 1),
+        "feature_acts": torch.empty(num_contexts, eval_tokens, 2 * num_tokens_either_side + 1, n_features),
     }, batch_size=[num_contexts, eval_tokens, 2 * num_tokens_either_side + 1]
     )
-    # TODO: only process one feature at a time. There will be a trade-off (at least for now) 
-    # between how many features to process versus
-    # how much data to use because of memory and storage constraints. 
+    # TODO: might have to process x < n_features features at a time. 
+    # TODO: Do B and M really need to be separate dimensions? 
 
-    # mlp_acts_NMWF = torch.empty(num_contexts, eval_tokens, 2 * num_tokens_either_side + 1, n_ffwd)
-    num_batches = num_contexts // eval_batch_size
+    num_batches = num_contexts // eval_batch_size + (num_contexts % eval_batch_size != 0)
     print(f"We will compute MLP activations in {num_batches} batches")
     for iter in range(num_batches):    
-        print(f"Computing MLP activations for batch # {iter+1}/{num_batches}")
         
+        print(f"Computing MLP activations for batch # {iter+1}/{num_batches}")
+
         # select text input for the batch
         x_BT = slice_fn(X_NT).pin_memory().to(device, non_blocking=True) if device_type == 'cuda' else slice_fn(X_NT).to(device)
         
         # compute MLP activations 
-        batch_mlp_acts_BTF = gpt.get_mlp_acts(x_BT) # (B, T, F) # TODO: Learn to use hooks instead? 
+        mlp_acts_BTF = gpt.get_mlp_acts(x_BT) # (B, T, F) # TODO: Learn to use hooks instead? 
+
+        # compute feature activations 
+        feature_acts_BTH = autoencoder.get_feature_acts(mlp_acts_BTF)
+        # assert feature_acts_BTH.shape == (eval_batch_size, block_size, n_features), "an issue"
+
+        # TODO: If there are memory issues, then at this stage, I can cut down feature_acts_BTH to only 
+        # certain components along the last dimension  
         
-        # sample tokens and store MLP activations only for the sampled tokens and windows around them
-        batch_mlp_acts_BMWF, batch_tokens_BMW = sample_tokens(batch_mlp_acts_BTF, x_BT, fn_seed=seed+iter)
-        data_NMW["mlp_acts"][iter * eval_batch_size: (iter + 1) * eval_batch_size] = batch_mlp_acts_BMWF.to(device='cpu')
-        data_NMW["tokens"][iter * eval_batch_size: (iter + 1) * eval_batch_size] = batch_tokens_BMW
-        
-    print(data_NMW["tokens"][-75:-70])
-    print(data_NMW["mlp_acts"][-75:-70])
-    print(num_contexts)
-    print(torch.count_nonzero(data_NMW["tokens"]))
+        # sample tokens and store feature activations only for the sampled tokens and windows around them
+        # flatten the first two dimensions # TODO: this is on trial basis for now 
+        x_BMW, feature_acts_BMWH = sample_tokens(x_BT, feature_acts_BTH, fn_seed=seed+iter)
+        data_NMW["tokens"][iter * eval_batch_size: (iter + 1) * eval_batch_size] = x_BMW
+        data_NMW["feature_acts"][iter * eval_batch_size: (iter + 1) * eval_batch_size] = feature_acts_BMWH
+        print(x_BMW.shape)
+        print(x_BMW)
+        print(x_BMW.view(-1, x_BMW.shape[-1]))
+        raise
+
+    # Logic so far and what's ahead
+    # we have contexts on which we compute MLP activations and feature activations
+    # but we save tokens and feature activations for only a subset of tokens and windows around them
+    # (B, M, W, H) 
+    # TODO: Can one flatten the first two dimensions?
+    # now we want to sort by the value of feature activations at the middle token of the windows
+    # i.e. for each fixed value along the last dimension, we want to find top k elements along the first two dims
+    # i.e. a tensor of shape (k, H)
+    # but k 
+    # now fix the value along the last dimension, say 0
+    # and iterate over the 0th dimension,
+    # 
+
+    print(torch.topk(data_NMW["feature_acts"], k=5, dim=-1))
+    # print(data_NMW["tokens"])
+    # print(data_NMW["feature_acts"])
+    # print(data_NMW["tokens"].shape)
+    # print(data_NMW["feature_acts"].shape)
+    # print(data_NMW["feature_acts"].numel())
+    # print(torch.count_nonzero(data_NMW["feature_acts"]))
+    # print(torch.count_nonzero(data_NMW["feature_acts"])/ data_NMW["feature_acts"].numel())
     # TODO: can't figure out why some of the tokens stay zero. hmm. 
     # TODO: also figure out what changes to make in order to make this work with cuda. 
     raise 
