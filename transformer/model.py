@@ -193,6 +193,33 @@ class GPT(nn.Module):
         return logits, loss
     
     @torch.no_grad()
+    def get_mlp_acts(self, idx):
+        # returns mlp activations of the final transformer layer 
+
+        device = idx.device
+        b, t = idx.size()
+        assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
+        pos = torch.arange(0, t, dtype=torch.long, device=device) # shape (t)
+
+        # embed
+        tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
+        pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
+        x = self.transformer.drop(tok_emb + pos_emb)
+        
+        # forward pass through first the first L-1 layers
+        for block in self.transformer.h[:-1]: 
+            x = block(x)
+
+        # apply layer norm and compute attention in the last decoder block
+        last_block = self.transformer.h[-1]
+        x = x + last_block.attn(last_block.ln_1(x))
+
+        # apply second layer norm and forward pass up until GeLU activation in the MLP layer
+        mlp_input = last_block.ln_2(x) # layer norms and attn in ith block
+        mlp_acts = last_block.mlp.gelu(last_block.mlp.c_fc(mlp_input)) # mlp layer and gelu in ith block
+        return mlp_acts
+
+    @torch.no_grad()
     def loss_from_mlp_acts(self, residual_stream, mlp_acts, targets):
         # given mlp activations of the final decoder block, compute loss 
         # this is useful for constructing reconstructed loss
