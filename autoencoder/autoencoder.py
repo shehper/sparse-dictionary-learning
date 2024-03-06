@@ -34,6 +34,13 @@ class AutoEncoder(nn.Module):
         out_dict = {'loss': loss, 'f': f} if self.training else {'loss': loss, 'f': f, 'reconst_acts': reconst_acts, 'mse_loss': mseloss, 'l1_loss': l1loss}
         
         return out_dict
+    
+    @torch.no_grad()
+    def get_feature_acts(self, x):
+        # x is of shape (b, n) where b = batch_size, n = d_MLP
+        xbar = x - self.dec.bias # (b, n)
+        f = self.relu(self.enc(xbar)) # (b, m)
+        return f
 
     @torch.no_grad()
     def normalize_decoder_columns(self):
