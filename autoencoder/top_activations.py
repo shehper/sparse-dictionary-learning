@@ -174,7 +174,7 @@ if __name__ == '__main__':
         # TODO: the calculation of H could probably be made better. Am I counting 1 extra? What about the case when 
         # n_features % n_features_per_phase == 0
         print(f'working on phase # {phase + 1}/{n_phases}: features # {phase * n_features_per_phase} through {phase * n_features_per_phase + H}')   
-        ## compute and store feature activations 
+        ## compute and store feature activations # TODO: data_MW should be renamed to something more clear. 
         data_MW = TensorDict({
             "tokens": torch.empty(M, W),
             "feature_acts_H": torch.empty(M, W, H),
@@ -199,40 +199,40 @@ if __name__ == '__main__':
 
         ## Get top k feature activations
         print(f'computing top k feature activations in phase # {phase + 1}/{n_phases}')
-        values_kH, indices_kH = torch.topk(data_MW["feature_acts_H"][:, num_tokens_either_side, :], k=k, dim=0)
-        top_feature_acts_kWH = torch.stack([data_MW["feature_acts_H"][indices_kH[:, i], :, i] for i in range(H)], dim=-1) 
-        top_windows_kWH = data_MW["tokens"][indices_kH].transpose(dim0=1, dim1=2)
-        assert top_feature_acts_kWH.shape == (k, W, H), "top feature activations do not have the right shape"
-        assert top_windows_kWH.shape == (k, W, H), "windows for top feature activations do not have the right shape"
-    
-        # TODO: save histograms in a separate directory. 
+        _, topk_indices_kH = torch.topk(data_MW["feature_acts_H"][:, num_tokens_either_side, :], k=k, dim=0)
+        # evaluate text windows and feature activations to topk_indices_kH to get texts and activations for top activations
+        top_acts_data_kWH = TensorDict({
+            "tokens": data_MW["tokens"][topk_indices_kH].transpose(dim0=1, dim1=2),
+            "feature_acts": torch.stack([data_MW["feature_acts_H"][topk_indices_kH[:, i], :, i] for i in range(H)], dim=-1)
+            }, batch_size=[k, W, H])
+            
         # TODO: consider making a histogram in plotly instead?
+        # TODO: positioning of text can be figured out later. 
         # TODO: can we do this work in parallel? perhaps using Ray?
+        # TODO: can the calculation of sampled tokens and activations be vectorized?
+        # TODO: is my definition of ultralow density neurons consistent with Anthropic's definition?
+        # TODO: make sure there are no bugs in switch back and forth between feature id and h.
+        # TODO: It seems that up until the computation of num_non_zero_acts,
+        # we can use vectorization. It would look something like this.
+        # mid_token_feature_acts_MH = data_MW["feature_acts_H"][:, num_tokens_either_side, :]
+        # num_nonzero_acts_MH = torch.count_nonzero(mid_token_feature_acts_MH, dim=1)
+        # the sorting and sampling operations that follow seem harder to vectorize.
+        # I wonder if there will be enough computational speed-up from vectorizing
+        # the computation of num_nonzero_acts_MH as above.
         for h in range(H):
             
             feature_id = phase * n_features_per_phase + h
             ## check whether feature is alive, dead or ultralow density based on activations on sampled tokens
             curr_feature_acts_MW = data_MW["feature_acts_H"][:, :, h]
             mid_token_feature_acts_M = curr_feature_acts_MW[:, num_tokens_either_side]
-            num_non_zero_acts = torch.count_nonzero(mid_token_feature_acts_M)
-            if num_non_zero_acts < I * X:
-                if num_non_zero_acts == 0:
-                    # print(f'dead neuron with non zero activation count: {num_non_zero_acts}')
-                    write_dead_feature_page(feature_id=feature_id, dirpath=autoencoder_path)
-                else:
-                    # print(f'ultra low density with non zero activation count: {num_non_zero_acts}')
-                    write_ultralow_density_feature_page(feature_id=feature_id, dirpath=autoencoder_path)
-                continue
+            num_nonzero_acts = torch.count_nonzero(mid_token_feature_acts_M)
 
-            ## sample I intervals of activations as feature is alive
-            sorted_acts_M, sorted_indices_M = torch.sort(mid_token_feature_acts_M, descending=True)
-            sampled_indices_IX = torch.stack([j * num_non_zero_acts // I + torch.randperm(num_non_zero_acts // I)[:X].sort()[0] for j in range(I)], dim=0)
-            original_indices_IX = sorted_indices_M[sampled_indices_IX]
-            sampled_acts_IXW = curr_feature_acts_MW[original_indices_IX]
-            sampled_tokens_IXW = data_MW["tokens"][original_indices_IX]
+            # if neuron is dead, write a dead neuron page
+            if num_nonzero_acts == 0:
+                write_dead_feature_page(feature_id=feature_id, dirpath=autoencoder_path)
+                continue 
 
             ## make a histogram of non-zero activations
-            # TODO: consider using Plotly for these images. -- If we save an image, can we still hover over it?
             act_density = torch.count_nonzero(curr_feature_acts_MW) / (M * W) * 100
             non_zero_acts = curr_feature_acts_MW[curr_feature_acts_MW !=0]
             make_histogram(activations=non_zero_acts, 
@@ -240,131 +240,28 @@ if __name__ == '__main__':
                            feature_id=feature_id,
                            dirpath=autoencoder_path)
 
-            # ## write feature page
-            write_alive_feature_page(feature_id=feature_id, dirpath=autoencoder_path)
+            # if neuron has very few non-zero activations, consider it an ultralow density neurons
+            if num_nonzero_acts < I * X:
+                write_ultralow_density_feature_page(feature_id=feature_id, 
+                                                    decode=decode,
+                                                    top_acts_data=top_acts_data_kWH[:num_nonzero_acts, :, h],
+                                                    dirpath=autoencoder_path)
+                continue
+
+            ## sample I intervals of activations when feature is alive
+            sorted_acts_M, sorted_indices_M = torch.sort(mid_token_feature_acts_M, descending=True)
+            sampled_indices_IX = torch.stack([j * num_nonzero_acts // I + torch.randperm(num_nonzero_acts // I)[:X].sort()[0] for j in range(I)], dim=0)
+            original_indices_IX = sorted_indices_M[sampled_indices_IX]
+            sampled_acts_data_IXW = TensorDict({
+                "tokens": data_MW["tokens"][original_indices_IX],
+                "feature_acts": curr_feature_acts_MW[original_indices_IX],
+                }, batch_size=[I, X, W])
+
+            # ## write feature page for an alive feature
+            write_alive_feature_page(feature_id=feature_id, 
+                                     decode=decode,
+                                     top_acts_data=top_acts_data_kWH[:, :, h],
+                                     sampled_acts_data = sampled_acts_data_IXW,
+                                     dirpath=autoencoder_path)
 
         break
-
-
-            ## add sampled activations to the feature page
-
-
-
-        # plot a histogram with non_zero_acts
-
-
-
-        # TODO: replace torch.randint by torch.randperm so that we can sample without replacement?
-
-
-        # print(f'printing subsample activations for feature # {feature}')
-        # for j in range(12):
-        #     print(f'printing subsample interval # {j}')
-        #     for k in range(5):
-        #         print(f'example # {k + 1}: {decode(sampled_tokens_IXW[j, k].tolist())}, \
-        #               activations: {sampled_acts_IXW[j, k]}')
-
-
-
-    ## USING FOR LOOP
-    # for each feature:
-    #   sort all the activations in a descending order
-    #   count the number of non-zero elements
-    #   divide the number of non-zero elements by 11
-    #   in each split induced by this division, pick 5 elements at random
-    #   but how do we use it to get indices for the rows of tokens?
-
-    # remember that feature_acts has shape MWH
-    # tokens has shape MW
-    # TODO: how do I make the two work together?
-    # well, it might be easier to do it one feature at a time
-    # for each feature, look at the middle point of the window
-    # and sort
-
-    #         assert curr_feature_acts_MW.shape == (M, W)
-    #         assert mid_token_feature_acts_M.shape == (M, )
-    #         assert sorted_acts_M.shape == (M, )
-    #         assert sorted_indices_M.shape == (M, )
-    #         assert num_non_zero_acts.shape == ()
-    #         assert sampled_indices_IX.shape == (I, X)
-    #         assert original_indices_IX.shape == (I, X)
-    #         assert sampled_acts_IXW.shape == (I, X, W)
-    #         assert sampled_tokens_IXW.shape == (I, X, W)
-    # # 
-
-    # for i in range(n_features_per_phase):
-    #     print(f'printing top activations for feature # {i}')
-    #     for j in range(k):
-    #         print(f'activation # {j}: {decode(topk_windows_kWH[j, :, i].tolist())}; mid value: {top_feature_acts_kWH[j, num_tokens_either_side, i]}, index: {indices_kH[j, i]}')
-
-
-
-    # List of things to record: 
-    # 1. neuron alignment
-    # 2. correlated neurons
-    # 3. subsample activations
-    # 4. histogram
-    # 5. feature ablations (positive logits, negative logits, etc.)
-
-    # #1 and #2 can be done later. 
-    # #3, # 4 and # 5 are more important.
-    # let's think about #3 first.
-
-
-
-    #    activation values: {top_feature_acts_kWH[j, :, i]}, \
-    # TODO: why does the same token and context appear many a times but with different activation values? 
-    # make sure the algebra for calculation of top k feature activations and windows is correct. 
-
-    # for i in range(n_features):
-    #     if topk_feature_acts[0] =
-    #     print(f'printing top activations for feature # {i}')
-    # TODO: should redefine a variable named 'window_size'
-
-    # TODO: I think that 
-    # data_MW["tokens"][topk_indices].transpose(dim0=1, dim1=2) will give (k, W, H)
-    # of k top windows for all features
-    # torch.stack([data_MW["feature_acts"][indices[:, i], :, i] for i in range(a.shape[-1])], dim=-1) 
-    # will also give a tensor of shape (k, W, H).
-    # this tensor will have feature activations for topk windows of all H features.
-    ## 
-
-    ## subsample intervals
-    #for feature_id in range(n_features):
-        # perhaps sort all the activations by the middle index
-        # now sample at intervals
-
-    # # plot a histogram
-    # for feature_id in range(n_features):
-    #     num_nonzero_acts = torch.count_nonzero(data_MW["feature_acts"][:, :, feature_id])
-    #     feature_density = num_nonzero_acts / (data_MW["tokens"].numel())
-    #     # TODO: Include code to write feature page and plot a histogram
-
-    # raise
-
-    # Logic so far and what's ahead
-    # we have contexts on which we compute MLP activations and feature activations
-    # but we save tokens and feature activations for only a subset of tokens and windows around them
-    # (B, M, W, H) 
-    # TODO: Can one flatten the first two dimensions?
-    # now we want to sort by the value of feature activations at the middle token of the windows
-    # i.e. for each fixed value along the last dimension, we want to find top k elements along the first two dims
-    # i.e. a tensor of shape (k, H)
-    # but k 
-    # now fix the value along the last dimension, say 0
-    # and iterate over the 0th dimension,
-    # 
-
-    # print(torch.topk(data_MW["feature_acts"], k=5, dim=-1))
-    # print(data_NMW["tokens"])
-    # print(data_NMW["feature_acts"])
-    # print(data_NMW["tokens"].shape)
-    # print(data_NMW["feature_acts"].shape)
-    # print(data_NMW["feature_acts"].numel())
-    # print(torch.count_nonzero(data_NMW["feature_acts"]))
-    # print(torch.count_nonzero(data_NMW["feature_acts"])/ data_NMW["feature_acts"].numel())
-    # TODO: can't figure out why some of the tokens stay zero. hmm. 
-    # TODO: also figure out what changes to make in order to make this work with cuda. 
-
-
- 
