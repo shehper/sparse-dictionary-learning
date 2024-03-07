@@ -2,7 +2,7 @@
 Load a trained autoencoder model to compute its top activations
 
 Run on a macbook on a Shakespeare dataset as 
-python top_activations.py --device=cpu --dataset=shakespeare_char --gpt_dir=out-shakespeare-char --device=cpu --num_contexts=1000 --autoencoder_subdir=1704914564.90-autoencoder-shakespeare_char
+python top_activations.py --device=cpu --dataset=shakespeare_char --gpt_dir=out-shakespeare-char --autoencoder_subdir=1704914564.90-autoencoder-shakespeare_char
 """
 
 import torch
@@ -12,6 +12,7 @@ import numpy as np
 import pickle # needed to load meta.pkl
 import tiktoken # needed to decode contexts to text
 import sys 
+import psutil
 from autoencoder import AutoEncoder
 from write_html import *
 
@@ -136,17 +137,26 @@ if __name__ == '__main__':
         encode = lambda s: enc.encode(s, allowed_special={"<|endoftext|>"})
         decode = lambda l: enc.decode(l)
 
+    # print memory again
+    memory = psutil.virtual_memory()
+    print(f'Available memory before creating X_NT: {memory.available / (1024**3):.4f} GB; memory usage: {memory.percent}%')
+
     ## select X, Y from text data
     # as openwebtext and shakespeare_char are small datasets, use the entire text data. split it into len(text_data)//block_size contexts
     T = block_size
     if dataset in ["openwebtext", "shakespeare_char"]:
-        X_NT = torch.stack([torch.from_numpy((text_data[i*T: (i+1)*T]).astype(np.int64)) for i in range(len(text_data)//T)])
+        N = num_contexts = len(text_data)//T # overwrite num_contexts = N
+        X_NT = torch.stack([torch.from_numpy((text_data[i*T: (i+1)*T]).astype(np.int32)) for i in range(N)])
         # TODO: note that we don't need y_BT/y_NT unless we compute feature ablations which we do plan to compute 
         # Y_NT = torch.stack([torch.from_numpy((text_data[i+1:i+1+block_size]).astype(np.int64)) for i in range(len(text_data)//block_size)])
-        num_contexts = N = X_NT.shape[0] # overwrite num_contexts = N
     else:
         raise NotImplementedError("""if the text dataset is too large, such as The Pile, you may not evaluate on the whole dataset.
                                     In this case, use get_text_batch function to randomly select num_contexts contexts""") # TODO
+
+    # print memory again
+    memory = psutil.virtual_memory()
+    print(f'Memeory taken by X_NT: {X_NT.element_size() * X_NT.numel() // 1024**3:.2f}')
+    print(f'Available memory after creating X_NT: {memory.available / (1024**3):.4f} GB; memory usage: {memory.percent}%')
 
     ## create the main HTML page
     create_main_html_page(n_features=n_features, dirpath=autoencoder_path)
@@ -176,10 +186,16 @@ if __name__ == '__main__':
         print(f'working on phase # {phase + 1}/{n_phases}: features # {phase * n_features_per_phase} through {phase * n_features_per_phase + H}')   
         ## compute and store feature activations # TODO: data_MW should be renamed to something more clear. 
         data_MW = TensorDict({
-            "tokens": torch.empty(M, W),
-            "feature_acts_H": torch.empty(M, W, H),
+            "tokens": torch.zeros(M, W),
+            "feature_acts_H": torch.zeros(M, W, H),
             }, batch_size=[M, W]
             )
+
+        # print memory again
+        memory = psutil.virtual_memory()
+        print(f'Memeory taken by data_MW["tokens"]: {data_MW["tokens"].element_size() * data_MW["tokens"].numel() // 1024**3:.2f}')
+        print(f'Memeory taken by data_MW["feature_acts_H"]: {data_MW["feature_acts_H"].element_size() * data_MW["feature_acts_H"].numel() // 1024**3:.2f}')
+        print(f'Available memory after initiating data_MW: {memory.available / (1024**3):.4f} GB; memory usage: {memory.percent}%')
 
         for iter in range(n_batches): 
             print(f"Computing feature activations for batch # {iter+1}/{n_batches} in phase # {phase + 1}/{n_phases}")
@@ -205,6 +221,12 @@ if __name__ == '__main__':
             "tokens": data_MW["tokens"][topk_indices_kH].transpose(dim0=1, dim1=2),
             "feature_acts": torch.stack([data_MW["feature_acts_H"][topk_indices_kH[:, i], :, i] for i in range(H)], dim=-1)
             }, batch_size=[k, W, H])
+
+        # print memory again
+        memory = psutil.virtual_memory()
+        print(f'Memeory taken by top_acts_data_kWH["tokens"]: {top_acts_data_kWH["tokens"].element_size() * top_acts_data_kWH["tokens"].numel() // 1024**3:.2f}')
+        print(f'Memeory taken by top_acts_data_kWH["feature_acts"]: {top_acts_data_kWH["feature_acts"].element_size() * top_acts_data_kWH["feature_acts"].numel() // 1024**3:.2f}')
+        print(f'Available memory after initiating top_acts_data_kWH: {memory.available / (1024**3):.4f} GB; memory usage: {memory.percent}%')
             
         # TODO: consider making a histogram in plotly instead?
         # TODO: positioning of text can be figured out later. 
@@ -256,6 +278,12 @@ if __name__ == '__main__':
                 "tokens": data_MW["tokens"][original_indices_IX],
                 "feature_acts": curr_feature_acts_MW[original_indices_IX],
                 }, batch_size=[I, X, W])
+
+            # print memory again
+            memory = psutil.virtual_memory()
+            print(f'Memeory taken by sampled_acts_data_IXW["tokens"]: {sampled_acts_data_IXW["tokens"].element_size() * sampled_acts_data_IXW["tokens"].numel() // 1024**3:.2f}')
+            print(f'Memeory taken by sampled_acts_data_IXW["feature_acts"]: {sampled_acts_data_IXW["feature_acts"].element_size() * sampled_acts_data_IXW["feature_acts"].numel() // 1024**3:.2f}')
+            print(f'Available memory after initiating sampled_acts_data_IXW: {memory.available / (1024**3):.4f} GB; memory usage: {memory.percent}%')
 
             # ## write feature page for an alive feature
             write_alive_feature_page(feature_id=feature_id, 
