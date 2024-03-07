@@ -264,4 +264,3 @@ if __name__ == '__main__':
                                      sampled_acts_data = sampled_acts_data_IXW,
                                      dirpath=autoencoder_path)
 
-        break
