@@ -155,7 +155,7 @@ if __name__ == '__main__':
 
     # print memory again
     memory = psutil.virtual_memory()
-    print(f'Memeory taken by X_NT: {X_NT.element_size() * X_NT.numel() // 1024**3:.2f}')
+    print(f'Memory taken by X_NT: {X_NT.element_size() * X_NT.numel() // 1024**3:.2f}')
     print(f'Available memory after creating X_NT: {memory.available / (1024**3):.4f} GB; memory usage: {memory.percent}%')
 
     ## create the main HTML page
@@ -193,9 +193,28 @@ if __name__ == '__main__':
 
         # print memory again
         memory = psutil.virtual_memory()
-        print(f'Memeory taken by data_MW["tokens"]: {data_MW["tokens"].element_size() * data_MW["tokens"].numel() // 1024**3:.2f}')
-        print(f'Memeory taken by data_MW["feature_acts_H"]: {data_MW["feature_acts_H"].element_size() * data_MW["feature_acts_H"].numel() // 1024**3:.2f}')
+        print(f'Memory taken by data_MW["tokens"]: {data_MW["tokens"].element_size() * data_MW["tokens"].numel() // 1024**3:.2f}')
+        print(f'Memory taken by data_MW["feature_acts_H"]: {data_MW["feature_acts_H"].element_size() * data_MW["feature_acts_H"].numel() // 1024**3:.2f}')
         print(f'Available memory after initiating data_MW: {memory.available / (1024**3):.4f} GB; memory usage: {memory.percent}%')
+
+        import torch
+
+        if torch.cuda.is_available():
+            # Get the current GPU's ID
+            gpu_id = torch.cuda.current_device()
+            
+            # Get the name of the current GPU
+            gpu_name = torch.cuda.get_device_name(gpu_id)
+            
+            # Get total, allocated, and free memory (in bytes)
+            total_memory = torch.cuda.get_device_properties(gpu_id).total_memory
+            allocated_memory = torch.cuda.memory_allocated(gpu_id)
+            cached_memory = torch.cuda.memory_reserved(gpu_id)
+            
+            print(f"GPU: {gpu_name}")
+            print(f"Total Memory: {total_memory / (1024 ** 3):.2f} GB")
+            print(f"Allocated Memory: {allocated_memory / (1024 ** 3):.2f} GB")
+            print(f"Cached Memory: {cached_memory / (1024 ** 3):.2f} GB")
 
         for iter in range(n_batches): 
             print(f"Computing feature activations for batch # {iter+1}/{n_batches} in phase # {phase + 1}/{n_phases}")
@@ -213,6 +232,16 @@ if __name__ == '__main__':
             data_MW["tokens"][iter * B * U: (iter + 1) * B * U] = X_PW
             data_MW["feature_acts_H"][iter * B * U: (iter + 1) * B * U] = feature_acts_PWH
 
+            if torch.cuda.is_available():
+                allocated_memory = torch.cuda.memory_allocated(gpu_id)
+                cached_memory = torch.cuda.memory_reserved(gpu_id)
+                
+                print(f"Allocated Memory: {allocated_memory / (1024 ** 3):.2f} GB")
+                print(f"Cached Memory: {cached_memory / (1024 ** 3):.2f} GB")
+
+            if iter == 1: # TODO: remove this later
+                break
+
         ## Get top k feature activations
         print(f'computing top k feature activations in phase # {phase + 1}/{n_phases}')
         _, topk_indices_kH = torch.topk(data_MW["feature_acts_H"][:, num_tokens_either_side, :], k=k, dim=0)
@@ -224,8 +253,8 @@ if __name__ == '__main__':
 
         # print memory again
         memory = psutil.virtual_memory()
-        print(f'Memeory taken by top_acts_data_kWH["tokens"]: {top_acts_data_kWH["tokens"].element_size() * top_acts_data_kWH["tokens"].numel() // 1024**3:.2f}')
-        print(f'Memeory taken by top_acts_data_kWH["feature_acts"]: {top_acts_data_kWH["feature_acts"].element_size() * top_acts_data_kWH["feature_acts"].numel() // 1024**3:.2f}')
+        print(f'Memory taken by top_acts_data_kWH["tokens"]: {top_acts_data_kWH["tokens"].element_size() * top_acts_data_kWH["tokens"].numel() // 1024**3:.2f}')
+        print(f'Memory taken by top_acts_data_kWH["feature_acts"]: {top_acts_data_kWH["feature_acts"].element_size() * top_acts_data_kWH["feature_acts"].numel() // 1024**3:.2f}')
         print(f'Available memory after initiating top_acts_data_kWH: {memory.available / (1024**3):.4f} GB; memory usage: {memory.percent}%')
             
         # TODO: consider making a histogram in plotly instead?
@@ -281,8 +310,8 @@ if __name__ == '__main__':
 
             # print memory again
             memory = psutil.virtual_memory()
-            print(f'Memeory taken by sampled_acts_data_IXW["tokens"]: {sampled_acts_data_IXW["tokens"].element_size() * sampled_acts_data_IXW["tokens"].numel() // 1024**3:.2f}')
-            print(f'Memeory taken by sampled_acts_data_IXW["feature_acts"]: {sampled_acts_data_IXW["feature_acts"].element_size() * sampled_acts_data_IXW["feature_acts"].numel() // 1024**3:.2f}')
+            print(f'Memory taken by sampled_acts_data_IXW["tokens"]: {sampled_acts_data_IXW["tokens"].element_size() * sampled_acts_data_IXW["tokens"].numel() // 1024**3:.2f}')
+            print(f'Memory taken by sampled_acts_data_IXW["feature_acts"]: {sampled_acts_data_IXW["feature_acts"].element_size() * sampled_acts_data_IXW["feature_acts"].numel() // 1024**3:.2f}')
             print(f'Available memory after initiating sampled_acts_data_IXW: {memory.available / (1024**3):.4f} GB; memory usage: {memory.percent}%')
 
             # ## write feature page for an alive feature
