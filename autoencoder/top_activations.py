@@ -12,6 +12,7 @@ import numpy as np
 import pickle # needed to load meta.pkl
 import tiktoken # needed to decode contexts to text
 import sys 
+import gc
 import psutil
 from autoencoder import AutoEncoder
 from write_html import *
@@ -231,6 +232,8 @@ if __name__ == '__main__':
             X_PW, feature_acts_PWH = sample_tokens(X_BT, feature_acts_BTH, fn_seed=seed+iter) # P = B * U
             data_MW["tokens"][iter * B * U: (iter + 1) * B * U] = X_PW
             data_MW["feature_acts_H"][iter * B * U: (iter + 1) * B * U] = feature_acts_PWH
+
+            del mlp_acts_BTF, feature_acts_BTH, X_BT, X_PW, feature_acts_PWH; gc.collect(); torch.cuda.empty_cache() 
 
             if torch.cuda.is_available():
                 allocated_memory = torch.cuda.memory_allocated(gpu_id)
