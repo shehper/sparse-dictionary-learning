@@ -8,52 +8,51 @@ python write_html.py --k=5 --num_intervals=6 --interval_exs=3 --autoencoder_subd
 
 import os
 import tiktoken # needed to decode contexts to text
-import random
 import matplotlib.pyplot as plt
 import torch
 from tensordict import TensorDict
 
 def write_main_page(n_features):
 
-    main = """
+    main = f"""
     <!DOCTYPE html>
     <html>
     <head>
         <title> Feature Visualization </title>
         <style>
-            body {
+            body {{
                 text-align: center; /* Center content */
                 font-family: Arial, sans-serif; /* Font style */
-            }
-            #pageSlider, #pageNumberInput, button {
+            }}
+            #pageSlider, #pageNumberInput, button {{
                 margin-top: 20px; /* Space above elements */
                 margin-bottom: 20px; /* Space below elements */
                 width: 50%; /* Width of the slider and input box */
                 max-width: 400px; /* Maximum width */
-            }
-            #pageNumberInput, button {
+            }}
+            #pageNumberInput, button {{
                 width: auto; /* Auto width for input and button */
                 padding: 5px 10px; /* Padding inside input box and button */
                 font-size: 16px; /* Font size */
-            }
-            #pageContent {
+            }}
+            #pageContent {{
                 margin-top: 20px; /* Space above page content */
                 width: 80%; /* Width of the content area */
                 margin-left: auto; /* Center the content area */
                 margin-right: auto; /* Center the content area */
-            }
+            }}
         </style>
     </head>
     <body>
         <h1>Feature Browser</h1>
-        <p>Slide to select a neuron number (0 to 1023) or enter it below:</p>
+        <p>Slide to select a neuron number (0 to {n_features-1}) or enter it below:</p>
         
         <!-- Slider Input -->
-        <input type="range" id="pageSlider" min="0" max="1023" value="0" oninput="updateInputBox(this.value)">
+        <input type="range" id="pageSlider" min="1" max="{n_features-1}" value="0" oninput="updateInputBox(this.value)">
         <span id="sliderValue">0</span>
 
         <!-- Input Box and Go Button -->
-        <input type="number" id="pageNumberInput" min="0" max="1023" value="0">
+        <input type="number" id="pageNumberInput" min="0" max="{n_features-1}" value="0">
         <button onclick="goToPage()">Go</button>
 
         <!-- Display Area for Page Content -->
@@ -62,74 +61,74 @@ def write_main_page(n_features):
         </div>
 
         <script>
-            function updateInputBox(value) {
+            function updateInputBox(value) {{
                 document.getElementById("sliderValue").textContent = value;
                 document.getElementById("pageNumberInput").value = value;
                 loadPageContent(value);
-            }
+            }}
         
-            function goToPage() {
+            function goToPage() {{
                 var pageNumber = parseInt(document.getElementById("pageNumberInput").value);
-                if (pageNumber >= 0 && pageNumber <= 1023) {
+                if (pageNumber >= 0 && pageNumber <= {n_features-1}) {{
                     document.getElementById("pageSlider").value = pageNumber;
                     updateInputBox(pageNumber);
-                } else {
-                    alert("Please enter a valid page number between 0 and 1023.");
-                }
-            }
+                }} else {{
+                    alert("Please enter a valid page number between 0 and {n_features-1}.");
+                }}
+            }}
         
-            function loadPageContent(pageNumber) {
+            function loadPageContent(pageNumber) {{
                 var contentDiv = document.getElementById("pageContent");
         
                 fetch('feature_pages/' + pageNumber + '.html')
-                    .then(response => {
-                        if (!response.ok) {
+                    .then(response => {{
+                        if (!response.ok) {{
                             throw new Error('Page not found');
-                        }
+                        }}
                         return response.text();
-                    })
-                    .then(data => {
+                    }})
+                    .then(data => {{
                         var newData = data.replace(/src="(.+?)"/g, 'src="feature_pages/$1"');
                         contentDiv.innerHTML = newData;
                         // Save the current page number to localStorage
                         localStorage.setItem('currentPage', pageNumber);
-                    })
-                    .catch(error => {
+                    }})
+                    .catch(error => {{
                         contentDiv.innerHTML = '<p>Error loading page content.</p>';
-                    });
-            }
+                    }});
+            }}
         
-            window.addEventListener('load', () => {
+            window.addEventListener('load', () => {{
                 // Try to load the page number from the URL parameter if available
                 const urlParams = new URLSearchParams(window.location.search);
                 const pageFromURL = urlParams.get('page');
         
                 // Determine the page to load: URL parameter, or localStorage, or default to 0
                 let pageToLoad = pageFromURL !== null && !isNaN(parseInt(pageFromURL)) ? parseInt(pageFromURL) : parseInt(localStorage.getItem('currentPage') || 0);
-                pageToLoad = Math.max(0, Math.min(1023, pageToLoad)); // Validate the page number
+                pageToLoad = Math.max(0, Math.min({n_features-1}, pageToLoad)); // Validate the page number
                 
                 document.getElementById("pageSlider").value = pageToLoad;
                 document.getElementById("pageNumberInput").value = pageToLoad;
                 document.getElementById("sliderValue").textContent = pageToLoad;
                 loadPageContent(pageToLoad);
-            });
+            }});
         
             // Listen for keydown events on the whole document
-            document.addEventListener('keydown', function(event) {
+            document.addEventListener('keydown', function(event) {{
                 const key = event.key;
-                if (key === "ArrowLeft" || key === "ArrowRight") {
+                if (key === "ArrowLeft" || key === "ArrowRight") {{
                     let currentPageNumber = parseInt(document.getElementById("pageNumberInput").value);
-                    if (key === "ArrowLeft") {
+                    if (key === "ArrowLeft") {{
                         // Decrement the page number, ensuring it doesn't go below 0
                         currentPageNumber = Math.max(0, currentPageNumber - 1);
-                    } else if (key === "ArrowRight") {
-                        // Increment the page number, ensuring it doesn't go above 1023
-                        currentPageNumber = Math.min(1023, currentPageNumber + 1);
-                    }
+                    }} else if (key === "ArrowRight") {{
+                        // Increment the page number, ensuring it doesn't go above {n_features-1}
+                        currentPageNumber = Math.min({n_features-1}, currentPageNumber + 1);
+                    }}
                     document.getElementById("pageSlider").value = currentPageNumber;
                     updateInputBox(currentPageNumber);
-                }
-            });
+                }}
+            }});
         </script>
         
     </body>
@@ -137,24 +136,25 @@ def write_main_page(n_features):
     """
     return main
 
-def write_tooltip_css_file():
-    tooltip_css = """/* Style for the tooltip */
-        .tooltip {
+def write_tooltip_css_file(right_margin=-7):
+    tooltip_css = f"""/* Style for the tooltip */
+        .tooltip {{
             position: relative;
             display: inline-block;
             cursor: pointer;
-        }
+            margin-right: {right_margin}px;
+        }}
 
         /* Style for the tooltip trigger text */
-        .tooltip > span {
+        .tooltip > span {{
             background-color: #FFCC99; /* Light orange background color */
             color: #333; /* Dark text color for contrast */
-            padding: 2px; /* Add padding to make the background more prominent */
-            border-radius: 4px; /* Optional: Adds rounded corners to the background */
-        }
+            padding: 0px; /* Add padding to make the background more prominent */
+            border-radius: 0px; /* Optional: Adds rounded corners to the background */
+        }}
 
         /* Style for the tooltip content */
-        .tooltip .tooltiptext {
+        .tooltip .tooltiptext {{
             visibility: hidden;
             width: 280px; /* Increased width */
             background-color: #333;
@@ -171,41 +171,41 @@ def write_tooltip_css_file():
             transition: opacity 0.3s;
             white-space: pre-wrap;
             overflow: hidden; /* Ensures the content does not spill outside the tooltip */
-        }
+        }}
 
         /* Show the tooltip content when hovering over the tooltip */
-        .tooltip:hover .tooltiptext {
+        .tooltip:hover .tooltiptext {{
             visibility: visible;
             opacity: 1;
-        }
+        }}
 
         /* Style for the tooltip trigger text with the default color */
-        .tooltip > span.default-color {
+        .tooltip > span.default-color {{
             background-color: #FFCC99; /* Light orange background color */
             color: #333; /* Dark text color for contrast */
-            padding: 2px;
-            border-radius: 4px;
-        }
+            padding: 0px;
+            border-radius: 0px;
+        }}
 
         /* Style for the tooltip trigger text with white color */
-        .tooltip > span.white-color {
+        .tooltip > span.white-color {{
             background-color: #FFFFFF; /* White background color */
             color: #333; /* Dark text color for contrast */
-            padding: 2px;
-            border-radius: 4px;
-        }
+            padding: 0px;
+            border-radius: 0px;
+        }}
         """
         
     return tooltip_css
 
-def create_main_html_page(n_features, dirpath=None):
+def create_main_html_page(n_features, dirpath=None, right_margin=-7):
     # create a directory to store feature information
     os.makedirs(os.path.join(dirpath, 'feature_pages'), exist_ok=True)
     # create a directory to store histograms of feature activations
     os.makedirs(os.path.join(dirpath, 'histograms'), exist_ok=True)
     # write a helper css file tooltip.css in autoencoder_subdir
     with open(os.path.join(dirpath, f'tooltip.css'), 'w') as file:
-        file.write(write_tooltip_css_file()) 
+        file.write(write_tooltip_css_file(right_margin=right_margin)) 
     # write the main page for html
     with open(os.path.join(dirpath, 'main.html'), 'w') as file:
         file.write(write_main_page(n_features))
@@ -223,7 +223,7 @@ def make_histogram(activations, density, feature_id, dirpath=None):
     plt.savefig(os.path.join(dirpath, 'histograms', f'{feature_id}.png'))
     plt.close()
 
-def feature_page_header(feature_id):
+def write_feature_page_header(feature_id):
     header = f"""
     <!DOCTYPE html>
     <html lang="en">
@@ -232,23 +232,35 @@ def feature_page_header(feature_id):
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <link rel="stylesheet" href="tooltip.css">
         <style>
-            body {{
-                text-align: center; /* Center content */
-                }}
-            </style>
+        body {{
+            text-align: center; /* Center content */
+        }}
+        .content-container {{
+            display: flex;
+            justify-content: center;
+            align-items: flex-start; /* Adjust this as needed */
+            margin-top: 20px; /* Adjust space from the top */
+        }}
+        .image-container {{
+            flex: 1; /* Adjust as needed */
+            text-align: center; /* Center image */
+        }}
+        .text-container {{
+            flex: 1; /* Adjust as needed */
+            text-align: left; /* Align text to the left */
+            padding-left: 20px; /* Space between image and text */
+        }}
+    </style>
     </head>
     <body>
     <br><br>
-    <span style="color:blue;">
-        <h2>Neuron # {feature_id}</h2>
-    </span>
     """
     return header
 
 def write_dead_feature_page(feature_id, dirpath=None):
     html_content = []
     # add page_header to list of texts
-    html_content.append(feature_page_header(feature_id)) 
+    html_content.append(write_feature_page_header(feature_id)) 
     # add dead neuron text
     html_content.append("""<span style="color:red;"> 
                             <h2>  Dead Neuron. </h2> 
@@ -272,9 +284,6 @@ def write_activation_example(decode, tokens, activations):
         char = char.replace('\n', '<span style="font-weight: normal;">&#x23CE;</span>')
         
         text_color = "default-color" if activation > 0 else "white-color"
-        # TODO: Instead of writing with weird indentation, I should 
-        # write with indentation first then remove indentation when appending
-        # text to html_content. This is purely so that the s
         single_token_text = f"""
         <div class="tooltip"> 
             <span class="{text_color}"> {char.replace(' ', '&nbsp;')} </span> 
@@ -321,12 +330,18 @@ def write_alive_feature_page(feature_id, decode, top_acts_data, sampled_acts_dat
     html_content = []
 
     # add page_header to the HTML page
-    html_content.append(feature_page_header(feature_id)) 
+    html_content.append(write_feature_page_header(feature_id)) 
 
     # add histogram of feature activations
     if os.path.exists(os.path.join(dirpath, 'histograms', f'{feature_id}.png')):
-        html_content.append(f"""<img src=\"../histograms/{feature_id}.png\" alt=\"Feature Activations Histogram\">
-        <br>""")
+        html_content.append(f"""<div class="content-container">
+        <div class="image-container">
+            <img src="../histograms/{feature_id}.png" alt="Feature Activations Histogram">
+        </div>""")
+
+    # add feature #, and the information that it is an ultralow density neuron
+    html_content.append(f"""<div class="text-container">
+        <h2 style="color:blue;">Neuron # {feature_id}</h2> """)
 
     # include a section on top activations
     html_content.append("""
@@ -361,16 +376,20 @@ def write_ultralow_density_feature_page(feature_id, decode, top_acts_data, dirpa
     html_content = []
 
     # add page_header to the HTML page
-    html_content.append(feature_page_header(feature_id)) 
-
-    html_content.append("""
-    <h2> <span style="color:blue;">  Ultralow Density Neuron </span> </h2> 
-    """)
+    html_content.append(write_feature_page_header(feature_id)) 
 
     # add histogram of feature activations
     if os.path.exists(os.path.join(dirpath, 'histograms', f'{feature_id}.png')):
-        html_content.append(f"""<img src=\"../histograms/{feature_id}.png\" alt=\"Feature Activations Histogram\">
-        <br>""")
+        html_content.append(f"""<div class="content-container">
+        <div class="image-container">
+            <img src="../histograms/{feature_id}.png" alt="Feature Activations Histogram">
+        </div>""")
+
+    # add feature #, and the information that it is an ultralow density neuron
+    html_content.append(f"""<div class="text-container">
+        <h2 style="color:blue;">Neuron # {feature_id}</h2>
+        <h2> <span style="color:blue;">Ultralow Density Neuron</span> </h2> """)
+
 
     # include a section on top activations
     html_content.append("""
