@@ -39,6 +39,27 @@ n_intervals = 12 # number of intervals to divide activations in; = 12 in Anthrop
 n_exs_per_interval = 5 # number of examples to sample from each interval of activations 
 modes_density_cutoff = 1e-3 # TODO: remove this; it is not being used anymor
 
+def print_memory_info(stage=""):
+    memory = psutil.virtual_memory()
+    print(f'Available memory {stage}: {memory.available / (1024**3):.4f} GB; memory usage: {memory.percent}%')
+
+def print_gpu_memory_info(stage=""):
+    if stage:
+        print(stage)
+    if torch.cuda.is_available():
+        gpu_id = torch.cuda.current_device()
+        gpu_name = torch.cuda.get_device_name(gpu_id)
+
+        # Get total, allocated, and free memory (in bytes)
+        total_memory = torch.cuda.get_device_properties(gpu_id).total_memory
+        allocated_memory = torch.cuda.memory_allocated(gpu_id)
+        cached_memory = torch.cuda.memory_reserved(gpu_id)
+        
+        print(f"GPU: {gpu_name}")
+        print(f"Total Memory: {total_memory / (1024 ** 3):.2f} GB")
+        print(f"Allocated Memory: {allocated_memory / (1024 ** 3):.2f} GB")
+        print(f"Cached Memory: {cached_memory / (1024 ** 3):.2f} GB")
+
 def sample_tokens(*args, fn_seed=0, U=eval_tokens, V=num_tokens_either_side):
     # given tensors each of shape (B, T, ...), return tensors on randomly selected tokens
     # and windows around them. shape of output: (B * U, W, ...)
@@ -138,33 +159,21 @@ if __name__ == '__main__':
         encode = lambda s: enc.encode(s, allowed_special={"<|endoftext|>"})
         decode = lambda l: enc.decode(l)
 
-    # print memory again
-    memory = psutil.virtual_memory()
-    print(f'Available memory before creating X_NT: {memory.available / (1024**3):.4f} GB; memory usage: {memory.percent}%')
-
+    
     ## select X, Y from text data
-    # as openwebtext and shakespeare_char are small datasets, use the entire text data. split it into len(text_data)//block_size contexts
-    T = block_size
-    if dataset in ["openwebtext", "shakespeare_char"]:
-        N = num_contexts = len(text_data)//T # overwrite num_contexts = N
-        X_NT = torch.stack([torch.from_numpy((text_data[i*T: (i+1)*T]).astype(np.int32)) for i in range(N)])
-        # TODO: note that we don't need y_BT/y_NT unless we compute feature ablations which we do plan to compute 
-        # Y_NT = torch.stack([torch.from_numpy((text_data[i+1:i+1+block_size]).astype(np.int64)) for i in range(len(text_data)//block_size)])
-    else:
-        raise NotImplementedError("""if the text dataset is too large, such as The Pile, you may not evaluate on the whole dataset.
-                                    In this case, use get_text_batch function to randomly select num_contexts contexts""") # TODO
-
-    # print memory again
-    memory = psutil.virtual_memory()
-    print(f'Memory taken by X_NT: {X_NT.element_size() * X_NT.numel() // 1024**3:.2f}')
-    print(f'Available memory after creating X_NT: {memory.available / (1024**3):.4f} GB; memory usage: {memory.percent}%')
-
-    ## create the main HTML page
-    create_main_html_page(n_features=n_features, dirpath=autoencoder_path)
-
-    ## glossary of variables
     T = block_size
     N = num_contexts
+    print_memory_info(stage="before creating evaluation text data")
+    # if number of contexts is too large (larger than length of data//block size), may as well use the entire dataset
+    if len(text_data) < N * T:
+        N = num_contexts = len(text_data)//block_size # overwrite N
+        ix = torch.tensor([i*T for i in range(N)])
+    else:
+        ix = torch.randint(len(text_data) - T, (N,))
+    X_NT = torch.stack([torch.from_numpy((text_data[i: i+T]).astype(np.int32)) for i in ix])
+    print_memory_info(stage="after creating evaluation text data")
+
+    ## glossary of variables
     U = eval_tokens
     V = num_tokens_either_side
     M = N * U
@@ -172,10 +181,16 @@ if __name__ == '__main__':
     I = n_intervals
     X = n_exs_per_interval
     B = eval_batch_size
+    
+    ## create the main HTML page
+    # TODO: right margin of each token in HTML pages seems to depend on the choice of tokenizer
+    # For now I am using a  makeshift solution that uses a different value of right margin of each token
+    # when dataset is shakespeare_char
+    right_margin = -4 if dataset == 'shakespeare_char' else -7
+    create_main_html_page(n_features=n_features, dirpath=autoencoder_path, right_margin=right_margin)
 
     # TODO: dynamically set n_features_per_phase and n_phases by reading off free memory in the system
-    # TODO: ensure compatability with CUDA
-    # due to memory constraints, compute feature data in phases, processing n_features_per_phase features in each phase 
+    ## due to memory constraints, compute feature data in phases, processing n_features_per_phase features in each phase 
     n_phases = n_features // n_features_per_phase + (n_features % n_features_per_phase !=0)
     n_batches = N // B + (N % B != 0)
     print(f"Will process features in {n_phases} phases. Each phase will have forward pass in {n_batches} batches")
@@ -187,35 +202,16 @@ if __name__ == '__main__':
         print(f'working on phase # {phase + 1}/{n_phases}: features # {phase * n_features_per_phase} through {phase * n_features_per_phase + H}')   
         ## compute and store feature activations # TODO: data_MW should be renamed to something more clear. 
         data_MW = TensorDict({
-            "tokens": torch.zeros(M, W),
+            "tokens": torch.zeros(M, W, dtype=torch.int32),
             "feature_acts_H": torch.zeros(M, W, H),
             }, batch_size=[M, W]
             )
 
-        # print memory again
-        memory = psutil.virtual_memory()
-        print(f'Memory taken by data_MW["tokens"]: {data_MW["tokens"].element_size() * data_MW["tokens"].numel() // 1024**3:.2f}')
-        print(f'Memory taken by data_MW["feature_acts_H"]: {data_MW["feature_acts_H"].element_size() * data_MW["feature_acts_H"].numel() // 1024**3:.2f}')
-        print(f'Available memory after initiating data_MW: {memory.available / (1024**3):.4f} GB; memory usage: {memory.percent}%')
-
-        import torch
-
-        if torch.cuda.is_available():
-            # Get the current GPU's ID
-            gpu_id = torch.cuda.current_device()
+        # in the first phase, it is useful to print out GPU memory information 
+        if phase == 0:
+            print_memory_info(stage="after initating data_MW")
+            print_gpu_memory_info(stage="before forward pass through first batch in the first phase")
             
-            # Get the name of the current GPU
-            gpu_name = torch.cuda.get_device_name(gpu_id)
-            
-            # Get total, allocated, and free memory (in bytes)
-            total_memory = torch.cuda.get_device_properties(gpu_id).total_memory
-            allocated_memory = torch.cuda.memory_allocated(gpu_id)
-            cached_memory = torch.cuda.memory_reserved(gpu_id)
-            
-            print(f"GPU: {gpu_name}")
-            print(f"Total Memory: {total_memory / (1024 ** 3):.2f} GB")
-            print(f"Allocated Memory: {allocated_memory / (1024 ** 3):.2f} GB")
-            print(f"Cached Memory: {cached_memory / (1024 ** 3):.2f} GB")
 
         for iter in range(n_batches): 
             print(f"Computing feature activations for batch # {iter+1}/{n_batches} in phase # {phase + 1}/{n_phases}")
@@ -235,15 +231,8 @@ if __name__ == '__main__':
 
             del mlp_acts_BTF, feature_acts_BTH, X_BT, X_PW, feature_acts_PWH; gc.collect(); torch.cuda.empty_cache() 
 
-            if torch.cuda.is_available():
-                allocated_memory = torch.cuda.memory_allocated(gpu_id)
-                cached_memory = torch.cuda.memory_reserved(gpu_id)
-                
-                print(f"Allocated Memory: {allocated_memory / (1024 ** 3):.2f} GB")
-                print(f"Cached Memory: {cached_memory / (1024 ** 3):.2f} GB")
-
-            if iter == 1: # TODO: remove this later
-                break
+            if phase == 0 and iter <= 1:
+                print_gpu_memory_info(stage=f"after forward pass # {iter + 1} in the first phase")
 
         ## Get top k feature activations
         print(f'computing top k feature activations in phase # {phase + 1}/{n_phases}')
