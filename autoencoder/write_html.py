@@ -136,13 +136,13 @@ def write_main_page(n_features):
     """
     return main
 
-def write_tooltip_css_file(right_margin=-7):
+def write_tooltip_css_file():
     tooltip_css = f"""/* Style for the tooltip */
         .tooltip {{
             position: relative;
             display: inline-block;
             cursor: pointer;
-            margin-right: {right_margin}px;
+            margin-right: -4px;
         }}
 
         /* Style for the tooltip trigger text */
@@ -198,14 +198,14 @@ def write_tooltip_css_file(right_margin=-7):
         
     return tooltip_css
 
-def create_main_html_page(n_features, dirpath=None, right_margin=-7):
+def create_main_html_page(n_features, dirpath=None):
     # create a directory to store feature information
     os.makedirs(os.path.join(dirpath, 'feature_pages'), exist_ok=True)
     # create a directory to store histograms of feature activations
     os.makedirs(os.path.join(dirpath, 'histograms'), exist_ok=True)
     # write a helper css file tooltip.css in autoencoder_subdir
     with open(os.path.join(dirpath, f'tooltip.css'), 'w') as file:
-        file.write(write_tooltip_css_file(right_margin=right_margin)) 
+        file.write(write_tooltip_css_file()) 
     # write the main page for html
     with open(os.path.join(dirpath, 'main.html'), 'w') as file:
         file.write(write_main_page(n_features))

@@ -183,11 +183,7 @@ if __name__ == '__main__':
     B = eval_batch_size
     
     ## create the main HTML page
-    # TODO: right margin of each token in HTML pages seems to depend on the choice of tokenizer
-    # For now I am using a  makeshift solution that uses a different value of right margin of each token
-    # when dataset is shakespeare_char
-    right_margin = -4 if dataset == 'shakespeare_char' else -7
-    create_main_html_page(n_features=n_features, dirpath=autoencoder_path, right_margin=right_margin)
+    create_main_html_page(n_features=n_features, dirpath=autoencoder_path)
 
     # TODO: dynamically set n_features_per_phase and n_phases by reading off free memory in the system
     ## due to memory constraints, compute feature data in phases, processing n_features_per_phase features in each phase 
@@ -302,8 +298,8 @@ if __name__ == '__main__':
 
             # print memory again
             memory = psutil.virtual_memory()
-            print(f'Memory taken by sampled_acts_data_IXW["tokens"]: {sampled_acts_data_IXW["tokens"].element_size() * sampled_acts_data_IXW["tokens"].numel() // 1024**3:.2f}')
-            print(f'Memory taken by sampled_acts_data_IXW["feature_acts"]: {sampled_acts_data_IXW["feature_acts"].element_size() * sampled_acts_data_IXW["feature_acts"].numel() // 1024**3:.2f}')
+            print(f'Memory taken by sampled_acts_data_IXW["tokens"]: {sampled_acts_data_IXW["tokens"].element_size() * sampled_acts_data_IXW["tokens"].numel() // 1024**3:.2f} GB')
+            print(f'Memory taken by sampled_acts_data_IXW["feature_acts"]: {sampled_acts_data_IXW["feature_acts"].element_size() * sampled_acts_data_IXW["feature_acts"].numel() // 1024**3:.2f} GB')
             print(f'Available memory after initiating sampled_acts_data_IXW: {memory.available / (1024**3):.4f} GB; memory usage: {memory.percent}%')
 
             # ## write feature page for an alive feature
