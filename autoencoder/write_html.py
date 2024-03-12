@@ -276,6 +276,11 @@ def write_activation_example(decode, tokens, activations):
     assert tokens.ndim == 1 and activations.ndim == 1, "expect tokens and acts to be 1d tensors"
     html_content = []
     W = tokens.shape[0]
+    mid_token_index = (W-1)//2
+
+    start_bold_text = lambda j, mid_token_index: "<b>" if j == mid_token_index else ""
+    end_bold_text = lambda j, mid_token_index: "</b>" if j == mid_token_index else ""
+
     for j in range(W):
         char = decode([tokens[j].item()])
         activation = activations[j].item()
@@ -286,7 +291,7 @@ def write_activation_example(decode, tokens, activations):
         text_color = "default-color" if activation > 0 else "white-color"
         single_token_text = f"""
         <div class="tooltip"> 
-            <span class="{text_color}"> {char.replace(' ', '&nbsp;')} </span> 
+            <span class="{text_color}"> {start_bold_text(j, mid_token_index)} {char.replace(' ', '&nbsp;')} {end_bold_text(j, mid_token_index)} </span> 
             <span class="tooltiptext"> 
                 Token: {char}
                 Activation: {activation:.4f} 
