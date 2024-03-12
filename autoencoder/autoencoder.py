@@ -34,12 +34,15 @@ class AutoEncoder(nn.Module):
         out_dict = {'loss': loss, 'f': f} if self.training else {'loss': loss, 'f': f, 'reconst_acts': reconst_acts, 'mse_loss': mseloss, 'l1_loss': l1loss}
         
         return out_dict
-    
+
     @torch.no_grad()
-    def get_feature_acts(self, x):
-        # x is of shape (b, n) where b = batch_size, n = d_MLP
+    def get_feature_acts(self, x, s, e):
+        # x is of shape (..., n) where n = d_MLP are (possibly more than 1) batch dimensions
+        # s, e are 'starting' (inclusive) and 'ending' (exclusive) indices respectively
+        # of features whose activations are to be computed
+        # The advantage of this method is that it computes forward pass (up until the hidden layer) for only e-s features   
         xbar = x - self.dec.bias # (b, n)
-        f = self.relu(self.enc(xbar)) # (b, m)
+        f = self.relu(xbar @ self.enc.weight[s:e, :].t() + self.enc.bias[s:e]) # (b, e-s)
         return f
 
     @torch.no_grad()

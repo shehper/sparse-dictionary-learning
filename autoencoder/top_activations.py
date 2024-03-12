@@ -193,8 +193,8 @@ if __name__ == '__main__':
                 X_BT = X_NT[iter * B: (iter + 1) * B].to(device)
             # compute MLP activations 
             mlp_acts_BTF = gpt.get_mlp_acts(X_BT) # TODO: Learn to use hooks instead? 
-            # compute feature activations # TODO: evaluate forward pass on only the portion of the autoencoder relevant to current features
-            feature_acts_BTH = autoencoder.get_feature_acts(mlp_acts_BTF)[:, :, phase * H: (phase + 1) * H]
+            # compute feature activations for features in this phase
+            feature_acts_BTH = autoencoder.get_feature_acts(x=mlp_acts_BTF, s=phase*H, e=(phase+1)*H)
             # sample tokens from the context, and save feature activations and tokens for these tokens in data_MW.
             X_PW, feature_acts_PWH = sample_tokens(X_BT, feature_acts_BTH, eval_tokens=U, num_tokens_either_side=V, fn_seed=seed+iter) # P = B * U
             data_MW["tokens"][iter * B * U: (iter + 1) * B * U] = X_PW 
