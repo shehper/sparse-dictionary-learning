@@ -39,30 +39,13 @@ n_intervals = 12 # number of intervals to divide activations in; = 12 in Anthrop
 n_exs_per_interval = 5 # number of examples to sample from each interval of activations 
 modes_density_cutoff = 1e-3 # TODO: remove this; it is not being used anymor
 
-def print_memory_info(stage=""):
-    memory = psutil.virtual_memory()
-    print(f'Available memory {stage}: {memory.available / (1024**3):.4f} GB; memory usage: {memory.percent}%')
-
-def print_gpu_memory_info(stage=""):
-    if stage:
-        print(stage)
-    if torch.cuda.is_available():
-        gpu_id = torch.cuda.current_device()
-        gpu_name = torch.cuda.get_device_name(gpu_id)
-
-        # Get total, allocated, and free memory (in bytes)
-        total_memory = torch.cuda.get_device_properties(gpu_id).total_memory
-        allocated_memory = torch.cuda.memory_allocated(gpu_id)
-        cached_memory = torch.cuda.memory_reserved(gpu_id)
-        
-        print(f"GPU: {gpu_name}")
-        print(f"Total Memory: {total_memory / (1024 ** 3):.2f} GB")
-        print(f"Allocated Memory: {allocated_memory / (1024 ** 3):.2f} GB")
-        print(f"Cached Memory: {cached_memory / (1024 ** 3):.2f} GB")
-
-def sample_tokens(*args, fn_seed=0, U=eval_tokens, V=num_tokens_either_side):
+def sample_tokens(*args, eval_tokens, num_tokens_either_side, fn_seed=0):
     # given tensors each of shape (B, T, ...), return tensors on randomly selected tokens
     # and windows around them. shape of output: (B * U, W, ...)
+    # Here, U = eval_tokens --- the number of tokens in each context on which to evaluate the autoencoder
+    # V = num_tokens_either_side --- the number of tokens on either side of the sampled token to represent
+
+    U, V = eval_tokens, num_tokens_either_side
     
     assert args and isinstance(args[0], torch.Tensor), "must provide at least one torch tensor as input"
     assert args[0].ndim >=2, "input tensor must at least have 2 dimensions"
@@ -163,7 +146,6 @@ if __name__ == '__main__':
     ## select X, Y from text data
     T = block_size
     N = num_contexts
-    print_memory_info(stage="before creating evaluation text data")
     # if number of contexts is too large (larger than length of data//block size), may as well use the entire dataset
     if len(text_data) < N * T:
         N = num_contexts = len(text_data)//block_size # overwrite N
@@ -171,7 +153,6 @@ if __name__ == '__main__':
     else:
         ix = torch.randint(len(text_data) - T, (N,))
     X_NT = torch.stack([torch.from_numpy((text_data[i: i+T]).astype(np.int32)) for i in ix])
-    print_memory_info(stage="after creating evaluation text data")
 
     ## glossary of variables
     U = eval_tokens
@@ -203,12 +184,6 @@ if __name__ == '__main__':
             }, batch_size=[M, W]
             )
 
-        # in the first phase, it is useful to print out GPU memory information 
-        if phase == 0:
-            print_memory_info(stage="after initating data_MW")
-            print_gpu_memory_info(stage="before forward pass through first batch in the first phase")
-            
-
         for iter in range(n_batches): 
             print(f"Computing feature activations for batch # {iter+1}/{n_batches} in phase # {phase + 1}/{n_phases}")
             # select text input for the batch
@@ -221,14 +196,11 @@ if __name__ == '__main__':
             # compute feature activations # TODO: evaluate forward pass on only the portion of the autoencoder relevant to current features
             feature_acts_BTH = autoencoder.get_feature_acts(mlp_acts_BTF)[:, :, phase * H: (phase + 1) * H]
             # sample tokens from the context, and save feature activations and tokens for these tokens in data_MW.
-            X_PW, feature_acts_PWH = sample_tokens(X_BT, feature_acts_BTH, fn_seed=seed+iter) # P = B * U
-            data_MW["tokens"][iter * B * U: (iter + 1) * B * U] = X_PW
+            X_PW, feature_acts_PWH = sample_tokens(X_BT, feature_acts_BTH, eval_tokens=U, num_tokens_either_side=V, fn_seed=seed+iter) # P = B * U
+            data_MW["tokens"][iter * B * U: (iter + 1) * B * U] = X_PW 
             data_MW["feature_acts_H"][iter * B * U: (iter + 1) * B * U] = feature_acts_PWH
 
             del mlp_acts_BTF, feature_acts_BTH, X_BT, X_PW, feature_acts_PWH; gc.collect(); torch.cuda.empty_cache() 
-
-            if phase == 0 and iter <= 1:
-                print_gpu_memory_info(stage=f"after forward pass # {iter + 1} in the first phase")
 
         ## Get top k feature activations
         print(f'computing top k feature activations in phase # {phase + 1}/{n_phases}')
@@ -239,16 +211,12 @@ if __name__ == '__main__':
             "feature_acts": torch.stack([data_MW["feature_acts_H"][topk_indices_kH[:, i], :, i] for i in range(H)], dim=-1)
             }, batch_size=[k, W, H])
 
-        # print memory again
+        # print memory again # TODO: remove these later
         memory = psutil.virtual_memory()
         print(f'Memory taken by top_acts_data_kWH["tokens"]: {top_acts_data_kWH["tokens"].element_size() * top_acts_data_kWH["tokens"].numel() // 1024**3:.2f}')
         print(f'Memory taken by top_acts_data_kWH["feature_acts"]: {top_acts_data_kWH["feature_acts"].element_size() * top_acts_data_kWH["feature_acts"].numel() // 1024**3:.2f}')
         print(f'Available memory after initiating top_acts_data_kWH: {memory.available / (1024**3):.4f} GB; memory usage: {memory.percent}%')
             
-        # TODO: consider making a histogram in plotly instead?
-        # TODO: positioning of text can be figured out later. 
-        # TODO: can we do this work in parallel? perhaps using Ray?
-        # TODO: can the calculation of sampled tokens and activations be vectorized?
         # TODO: is my definition of ultralow density neurons consistent with Anthropic's definition?
         # TODO: make sure there are no bugs in switch back and forth between feature id and h.
         # TODO: It seems that up until the computation of num_non_zero_acts,
@@ -296,7 +264,7 @@ if __name__ == '__main__':
                 "feature_acts": curr_feature_acts_MW[original_indices_IX],
                 }, batch_size=[I, X, W])
 
-            # print memory again
+            # print memory again  # TODO: remove these later
             memory = psutil.virtual_memory()
             print(f'Memory taken by sampled_acts_data_IXW["tokens"]: {sampled_acts_data_IXW["tokens"].element_size() * sampled_acts_data_IXW["tokens"].numel() // 1024**3:.2f} GB')
             print(f'Memory taken by sampled_acts_data_IXW["feature_acts"]: {sampled_acts_data_IXW["feature_acts"].element_size() * sampled_acts_data_IXW["feature_acts"].numel() // 1024**3:.2f} GB')
