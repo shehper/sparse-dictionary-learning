@@ -25,7 +25,6 @@ autoencoder/analyzing_top_dict.ipynb
 autoencoder/neuron_resampling.ipynb
 notes_exp.md
 *.html
-*.png
 *.arrow
 *.ipynb
 *.css
