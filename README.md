@@ -6,20 +6,15 @@ This repository reproduces results of [Anthropic's Sparse Dictionary Learning pa
 I trained a 1-layer transformer model from scratch using [nanoGPT](https://github.com/karpathy/nanoGPT) with $d_{\text{model}} = 128$. Then, I trained a sparse autoencoder with $4096$ features on its MLP activations as in [Anthropic's paper](https://transformer-circuits.pub/2023/monosemantic-features/). 93% of the autoencoder neurons were alive, only 5% of which were of ultra-low density. There are several interesting features. For example,
 
 - [A feature for French](https://shehper.github.io/feature-interface/?page=2011)
-<center>
-<img src="./assets/french.png" width="400" /> 
-</center>
-
 - [A feature for German](https://shehper.github.io/feature-interface/?page=156)
 - [A feature for Scandinavian languages](https://shehper.github.io/feature-interface/?page=1634)
 
-<center>
-<p float="left">
-  <img src="./assets/french.png" width="400" />
-  <img src="./assets/german.png" width="400" /> 
-  <img src="./assets/scandinavian.png" width="400" />
+<p align="center">
+  <img src="./assets/french.png" width="325" />
+  <img src="./assets/german.png" width="325" /> 
+  <img src="./assets/scandinavian.png" width="325" />
 </p>
-</center>
+<!-- </center> -->
 
 along with many others:
 
