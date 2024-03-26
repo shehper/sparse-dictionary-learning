@@ -193,7 +193,7 @@ class GPT(nn.Module):
         return logits, loss
     
     @torch.no_grad()
-    def get_mlp_acts(self, idx):
+    def get_last_mlp_acts(self, idx):
         # returns mlp activations of the final transformer layer 
 
         device = idx.device

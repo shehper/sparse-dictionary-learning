@@ -192,7 +192,7 @@ if __name__ == '__main__':
             else:
                 X_BT = X_NT[iter * B: (iter + 1) * B].to(device)
             # compute MLP activations 
-            mlp_acts_BTF = gpt.get_mlp_acts(X_BT) # TODO: Learn to use hooks instead? 
+            mlp_acts_BTF = gpt.get_last_mlp_acts(X_BT) # TODO: Learn to use hooks instead? 
             # compute feature activations for features in this phase
             feature_acts_BTH = autoencoder.get_feature_acts(x=mlp_acts_BTF, s=phase*H, e=(phase+1)*H)
             # sample tokens from the context, and save feature activations and tokens for these tokens in data_MW.

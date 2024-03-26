@@ -81,7 +81,7 @@ for batch in range(num_batches):
     contexts = torch.stack([torch.from_numpy((text_data[i:i+block_size]).astype(np.int64)) for i in ix]) # (b, t)
     
     # compute MLP activations from the loaded model
-    activations = model.get_mlp_acts(contexts).to(dtype=data_dtype) # (b, t, n_ffwd)
+    activations = model.get_last_mlp_acts(contexts).to(dtype=data_dtype) # (b, t, n_ffwd)
     
     # pick tokens_per_context (n) tokens from each context; and flatten the first two dimensions
     data = torch.stack([activations[i, torch.randint(block_size, (tokens_per_context,)), :] for i in range(contexts_per_batch)]).view(-1, activations.shape[-1]) #(b*n, n_ffwd)
