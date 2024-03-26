@@ -9,7 +9,7 @@ I trained a 1-layer transformer model from scratch using [nanoGPT](https://githu
   <img src="./assets/french.png" width="700" />
 </p>
 
-a feature each for German, Japanese, Hebrew, ..., and many others:
+a feature each for German, Japanese, and many other languages, as well many other interesting features:
 
 - [A feature for German](https://shehper.github.io/feature-interface/?page=156)
 - [A feature for Scandinavian languages](https://shehper.github.io/feature-interface/?page=1634)
@@ -38,9 +38,9 @@ a feature each for German, Japanese, Hebrew, ..., and many others:
 
 I used the "OpenWebText" dataset to train the transformer model, to generate the MLP activations dataset for the autoencoder, and to generate the feature interface visualizations. The transformer model had $d_{\text{model}}= 128$, $d_{\text{MLP}} = 512$, and $n_{\text{head}}= 4$. I trained this model for $2 \times 10^5$ iterations to roughly match the number of epochs with [Anthropic's training procedure](https://transformer-circuits.pub/2023/monosemantic-features#appendix-transformer).
 
-I collected the dataset of 4B MLP activations by performing forward pass on 20M prompts (each of length 1024), keeping 200 activation vectors from each prompt. Next, I trained the autoencoder for approximately $5 \times 10^5$ training steps at batch size 8192 and learning rate $3 \times 10^{-4}$. I performed neuron resampling 4 times during training at training steps $2.5 \times i \times 10^4$ with $i=1, 2, 3, 4$. See a complete log of the training run on the [W&B page](https://wandb.ai/shehper/sparse-autoencoder-openwebtext-public/runs/vjbcwjsf?nw=nwusershehper). The L1-coefficient for this training run is $1 \times 10^{-3}$. I selected the L1-coefficient and the learning rate by performing a grid search.
+I collected the dataset of 4B MLP activations by performing forward pass on 20M prompts (each of length 1024), keeping 200 activation vectors from each prompt. Next, I trained the autoencoder for approximately $5 \times 10^5$ training steps at batch size 8192 and learning rate $3 \times 10^{-4}$. I performed neuron resampling 4 times during training at training steps $2.5 \times i \times 10^4$ for $i=1, 2, 3, 4$. See a complete log of the training run on the [W&B page](https://wandb.ai/shehper/sparse-autoencoder-openwebtext-public/runs/vjbcwjsf?nw=nwusershehper). The L1-coefficient for this training run is $10^{-3}$. I selected the L1-coefficient and the learning rate by performing a grid search.
 
-For the most part, I followed the training procedure described in the [appendix](https://transformer-circuits.pub/2023/monosemantic-features#appendix-autoencoder) of Anthropic's original paper. In particular, I did not follow the improvements they suggested in their [January](https://transformer-circuits.pub/2024/jan-update/index.html) and [February](https://transformer-circuits.pub/2024/feb-update/index.html) updates. 
+For the most part, I followed the training procedure described in the [appendix](https://transformer-circuits.pub/2023/monosemantic-features#appendix-autoencoder) of Anthropic's original paper. I did not follow the improvements they suggested in their [January](https://transformer-circuits.pub/2024/jan-update/index.html) and [February](https://transformer-circuits.pub/2024/feb-update/index.html) updates. 
 
 ### TODOs
 - Make the transformer and autoencoder weights available on HuggingFace along with a demo on how to use them.
