@@ -10,9 +10,9 @@ I trained a 1-layer transformer model from scratch using [nanoGPT](https://githu
 - [A feature for Scandinavian languages](https://shehper.github.io/feature-interface/?page=1634)
 
 <p align="center">
-  <img src="./assets/french.png" width="325" />
-  <img src="./assets/german.png" width="325" /> 
-  <img src="./assets/scandinavian.png" width="325" />
+  <img src="./assets/french.png" width="300" />
+  <img src="./assets/german.png" width="300" /> 
+  <img src="./assets/scandinavian.png" width="300" />
 </p>
 <!-- </center> -->
 
