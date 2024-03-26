@@ -304,7 +304,7 @@ if __name__ == '__main__':
                 del batch_mlp_activations, f, f_subset; gc.collect(); torch.cuda.empty_cache()
 
                 # Compute reconstructed loss from batch_reconstructed_activations
-                log_dict['losses/reconstructed_nll'] += gpt.loss_from_mlp_acts(batch_res_stream, output['reconst_acts'], batch_targets).item()
+                log_dict['losses/reconstructed_nll'] += gpt.get_loss_from_last_mlp_acts(batch_res_stream, output['reconst_acts'], batch_targets).item()
                 log_dict['losses/autoencoder_loss'] += output['loss'].item() 
                 log_dict['losses/mse_loss'] += output['mse_loss'].item()
                 log_dict['losses/l1_loss'] += output['l1_loss'].item()

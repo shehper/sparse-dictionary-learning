@@ -220,7 +220,7 @@ class GPT(nn.Module):
         return mlp_acts
 
     @torch.no_grad()
-    def loss_from_mlp_acts(self, residual_stream, mlp_acts, targets):
+    def get_loss_from_last_mlp_acts(self, residual_stream, mlp_acts, targets):
         # given mlp activations of the final decoder block, compute loss 
         # this is useful for constructing reconstructed loss
         final_mlp = self.transformer.h[-1].mlp
@@ -255,7 +255,7 @@ class GPT(nn.Module):
         mlp_acts = last_block.mlp.gelu(last_block.mlp.c_fc(mlp_input)) # mlp layer and gelu in ith block
 
         # compute full loss 
-        full_loss = self.loss_from_mlp_acts(residual_stream=x, mlp_acts=mlp_acts, targets=targets)
+        full_loss = self.get_loss_from_last_mlp_acts(residual_stream=x, mlp_acts=mlp_acts, targets=targets)
 
         # compute mlp-ablated loss
         # TODO: In MLP ablated transformer, do we include the pre-MLP LayerNorm? If yes, replace x by mlp_input below
