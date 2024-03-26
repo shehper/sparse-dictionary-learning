@@ -264,27 +264,6 @@ class GPT(nn.Module):
         mlp_ablated_loss = F.cross_entropy(mlp_ablated_logits.view(-1, mlp_ablated_logits.size(-1)), targets.view(-1), ignore_index=-1)
 
         return x, mlp_acts, full_loss, mlp_ablated_loss
-    
-    @torch.no_grad()
-    def get_gelu_acts(self, idx):
-        # returns GeLU activations of MLP of the last decoder block. 
-        device = idx.device
-        b, t = idx.size()
-        assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
-        pos = torch.arange(0, t, dtype=torch.long, device=device) # shape (t)
-
-        tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
-        pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
-        x = self.transformer.drop(tok_emb + pos_emb)
-        for block in self.transformer.h[:-1]: # forward pass through first i-1 blocks
-            x = block(x)
-
-        last_block = self.transformer.h[-1] 
-        x = last_block.ln_2(x + last_block.attn(last_block.ln_1(x))) # layer norms and attn in ith block
-        x = last_block.mlp.gelu(last_block.mlp.c_fc(x)) # mlp layer and gelu in ith block
-
-        return x
-
 
     def crop_block_size(self, block_size):
         # model surgery to decrease the block size if necessary
