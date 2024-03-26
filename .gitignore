@@ -29,3 +29,4 @@ notes_exp.md
 *.arrow
 *.ipynb
 *.css
+autoencoder/out_autoencoder/
