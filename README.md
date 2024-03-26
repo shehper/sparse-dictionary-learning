@@ -6,18 +6,20 @@ This repository reproduces results of [Anthropic's Sparse Dictionary Learning pa
 I trained a 1-layer transformer model from scratch using [nanoGPT](https://github.com/karpathy/nanoGPT) with $d_{\text{model}} = 128$. Then, I trained a sparse autoencoder with $4096$ features on its MLP activations as in [Anthropic's paper](https://transformer-circuits.pub/2023/monosemantic-features/). 93% of the autoencoder neurons were alive, only 5% of which were of ultra-low density. There are several interesting features. For example,
 
 - [A feature for French](https://shehper.github.io/feature-interface/?page=2011)
-- [A feature for German](https://shehper.github.io/feature-interface/?page=156)
-- [A feature for Scandinavian languages](https://shehper.github.io/feature-interface/?page=1634)
 
 <p align="center">
-  <img src="./assets/french.png" width="300" />
-  <img src="./assets/german.png" width="300" /> 
-  <img src="./assets/scandinavian.png" width="300" />
+  <img src="./assets/french.png" width="600" />
 </p>
-<!-- </center> -->
+
+- [A feature for German](https://shehper.github.io/feature-interface/?page=156)
+
+<p align="center">
+  <img src="./assets/german.png" width="600" />
+</p>
 
 along with many others:
 
+- [A feature for Scandinavian languages](https://shehper.github.io/feature-interface/?page=1634)
 - [A feature for Japanese](https://shehper.github.io/feature-interface/?page=1989)
 - [A feature for Hebrew](https://shehper.github.io/feature-interface/?page=2026)
 - [A feature for Cyrilic vowels](https://shehper.github.io/feature-interface/?page=3987)
