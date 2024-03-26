@@ -1,11 +1,15 @@
 
-# Towards Monosemanticity
+# Towards Monosemanticity: Decomposing Language Models With Dictionary Learning
 
 This repository reproduces results of [Anthropic's Sparse Dictionary Learning paper](https://transformer-circuits.pub/2023/monosemantic-features/). The codebase is quite rough, but the results are excellent. See the [feature interface](https://shehper.github.io/feature-interface/) to browse through the features learned by the sparse autoencoder.  There are improvements to be made (see the [TODOs](#todos) section below), and I will work on them intermittently as I juggle things in life :)
 
 I trained a 1-layer transformer model from scratch using [nanoGPT](https://github.com/karpathy/nanoGPT) with $d_{\text{model}} = 128$. Then, I trained a sparse autoencoder with $4096$ features on its MLP activations as in [Anthropic's paper](https://transformer-circuits.pub/2023/monosemantic-features/). 93% of the autoencoder neurons were alive, only 5% of which were of ultra-low density. There are several interesting features. For example,
 
 - [A feature for French](https://shehper.github.io/feature-interface/?page=2011)
+<center>
+<img src="./assets/french.png" width="400" /> 
+</center>
+
 - [A feature for German](https://shehper.github.io/feature-interface/?page=156)
 - [A feature for Scandinavian languages](https://shehper.github.io/feature-interface/?page=1634)
 
