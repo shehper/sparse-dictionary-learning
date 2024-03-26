@@ -232,7 +232,7 @@ class GPT(nn.Module):
         return loss
 
     @torch.no_grad()
-    def forward_with_and_without_mlp(self, idx, targets):
+    def forward_with_and_without_last_mlp(self, idx, targets):
         # returns residual stream, mlp activations, usual loss and mlp-ablated loss 
 
         device = idx.device
@@ -249,21 +249,23 @@ class GPT(nn.Module):
 
         # compute attn and layer norm in the last decoder block
         last_block = self.transformer.h[-1]
-        x = x + last_block.attn(last_block.ln_1(x))
+        pre_mlp_res_stream = x + last_block.attn(last_block.ln_1(x))
 
-        mlp_input = last_block.ln_2(x) # layer norms and attn in ith block
+        mlp_input = last_block.ln_2(pre_mlp_res_stream) # layer norms and attn in ith block
         mlp_acts = last_block.mlp.gelu(last_block.mlp.c_fc(mlp_input)) # mlp layer and gelu in ith block
 
         # compute full loss 
-        full_loss = self.get_loss_from_last_mlp_acts(residual_stream=x, mlp_acts=mlp_acts, targets=targets)
+        full_loss = self.get_loss_from_last_mlp_acts(residual_stream=pre_mlp_res_stream, 
+                                                     mlp_acts=mlp_acts, 
+                                                     targets=targets)
 
         # compute mlp-ablated loss
-        # TODO: In MLP ablated transformer, do we include the pre-MLP LayerNorm? If yes, replace x by mlp_input below
-        mlp_ablated_stream = self.transformer.ln_f(x)
+        # TODO: In MLP ablated transformer, do we include the pre-MLP LayerNorm? If yes, replace pre_mlp_res_stream by mlp_input below
+        mlp_ablated_stream = self.transformer.ln_f(pre_mlp_res_stream)
         mlp_ablated_logits = self.lm_head(mlp_ablated_stream)
         mlp_ablated_loss = F.cross_entropy(mlp_ablated_logits.view(-1, mlp_ablated_logits.size(-1)), targets.view(-1), ignore_index=-1)
 
-        return x, mlp_acts, full_loss, mlp_ablated_loss
+        return pre_mlp_res_stream, mlp_acts, full_loss, mlp_ablated_loss
 
     def crop_block_size(self, block_size):
         # model surgery to decrease the block size if necessary

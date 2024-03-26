@@ -195,7 +195,7 @@ if __name__ == '__main__':
         # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
         x = slice_fn(X).pin_memory().to(device, non_blocking=True) if device_type == 'cuda' else slice_fn(X).to(device) # select a batch of text data inputs
         y = slice_fn(Y).pin_memory().to(device, non_blocking=True) if device_type == 'cuda' else slice_fn(Y).to(device) # select a batch of text data outputs
-        res_stream, mlp_activations, batch_loss, batch_ablated_loss = gpt.forward_with_and_without_mlp(x, y) # Transformer forward pass; compute residual stream, MLP activations and losses
+        res_stream, mlp_activations, batch_loss, batch_ablated_loss = gpt.forward_with_and_without_last_mlp(x, y) # Transformer forward pass; compute residual stream, MLP activations and losses
         mlp_activations_storage = torch.cat([mlp_activations_storage, mlp_activations.to(dtype=torch.float16, device='cpu')]) # store MLP activations
         residual_stream_storage = torch.cat([residual_stream_storage, res_stream.to(dtype=torch.float16, device='cpu')]) # store residual stream
         transformer_loss, mlp_ablated_loss = transformer_loss + batch_loss, mlp_ablated_loss + batch_ablated_loss 
