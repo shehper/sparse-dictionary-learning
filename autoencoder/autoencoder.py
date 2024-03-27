@@ -26,7 +26,7 @@ class AutoEncoder(nn.Module):
         f = self.relu(self.enc(xbar)) # (b, m)
         reconst_acts = self.dec(f) # (b, n)
         mseloss = F.mse_loss(reconst_acts, x) # scalar
-        l1loss = F.l1_loss(f, torch.zeros(f.shape, device=f.device), reduction='sum') # scalar
+        l1loss = F.l1_loss(f, torch.zeros_like(f), reduction='sum') / f.shape[0] # scalar
         loss = mseloss + self.lam * l1loss # scalar
         
         # if in training phase (i.e. model.train() has been called), we only need f and loss
