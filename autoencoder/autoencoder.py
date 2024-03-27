@@ -43,6 +43,7 @@ class AutoEncoder(nn.Module):
         # The advantage of this method is that it computes forward pass (up until the hidden layer) for only e-s features   
         xbar = x - self.dec.bias # (b, n)
         f = self.relu(xbar @ self.enc.weight[s:e, :].t() + self.enc.bias[s:e]) # (b, e-s)
+        
         return f
 
     @torch.no_grad()
@@ -57,6 +58,24 @@ class AutoEncoder(nn.Module):
         proj = torch.sum(self.dec.weight.grad * unit_w, dim=0) * unit_w 
         self.dec.weight.grad = self.dec.weight.grad - proj
 
+    @staticmethod    
+    def is_step_start_of_investigating_dead_neurons(step, resampling_interval, num_resamples):
+        """checks we should start investigating dead/alive neurons at this step.
+        In Anthropic's paper, it is step # 12500, 37500, 62500 and 87500, i.e. an odd multiple of (resampling_interval//2)."""
+        x, y = resampling_interval, num_resamples
+        return (step > 0) and step % (x // 2) == 0 and (step // (x // 2)) % 2 != 0 and step < x * y
+
+    @staticmethod
+    def is_step_in_the_phase_of_investigating_neurons(step, resampling_interval, num_resamples):
+        """checks if this step falls in a phase where we should be checking for active neurons.
+        In Anthropic's paper, it a step in the range [12500, 25000), [37500, 50000), [62500, 75000), or [87500, 100000). """
+        x, y = resampling_interval, num_resamples
+        milestones = [i*x for i in range(1, y+1)] #[x, 2*x, 3*x, 4*x]
+        for milestone in milestones:
+            if milestone - x//2 <= step < milestone:
+                return True
+        return False
+        
     @torch.no_grad()
     def initiate_dead_neurons(self):
         self.dead_neurons = set([neuron for neuron in range(self.m)])

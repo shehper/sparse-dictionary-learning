@@ -43,22 +43,6 @@ out_dir = 'out_autoencoder' # directory containing trained autoencoder model wei
 resampling_interval = 25000 # number of training steps after which neuron resampling will be performed
 num_resamples = 4 # number of times resampling is to be performed; it is done 4 times in Anthropic's paper
 
-def is_step_start_of_investigating_dead_neurons(step, resampling_interval, num_resamples):
-    """checks we should start investigating dead/alive neurons at this step.
-    In Anthropic's paper, it is step # 12500, 37500, 62500 and 87500, i.e. an odd multiple of (resampling_interval//2)."""
-    x, y = resampling_interval, num_resamples
-    return (step > 0) and step % (x // 2) == 0 and (step // (x // 2)) % 2 != 0 and step < x * y
-
-def is_step_in_the_phase_of_investigating_neurons(step, resampling_interval, num_resamples):
-    """checks if this step falls in a phase where we should be check for active neurons.
-       In Anthropic's paper, it a step in the range [12500, 25000), [37500, 50000), [62500, 75000), or [87500, 100000). """
-    x, y = resampling_interval, num_resamples
-    milestones = [i*x for i in range(1, y+1)] #[x, 2*x, 3*x, 4*x]
-    for milestone in milestones:
-        if milestone - x//2 <= step < milestone:
-            return True
-    return False
-
 def get_text_batch(data, block_size, batch_size):
     """a simplfied version of nanoGPT get_batch function to get a batch of text data (simplification: it does NOT send the batch to a GPU)"""
     ix = torch.randint(len(data) - block_size, (batch_size,))
@@ -247,13 +231,13 @@ if __name__ == '__main__':
         ## ------------ perform neuron resampling ----------- ######
         # check if at this step, we should start investigating dead/alive neurons
         # in Anthropic's paper, this is done at step # 12500, 37500, 62500 and 87500, i.e. an odd multiple of (resampling_interval//2).
-        if is_step_start_of_investigating_dead_neurons(step, resampling_interval, num_resamples):
+        if autoencoder.is_step_start_of_investigating_dead_neurons(step, resampling_interval, num_resamples):
             print(f'initiating investigation of dead neurons at step = {step}')
             autoencoder.initiate_dead_neurons()
 
         # check if this step falls in a phase where we should check for active neurons
         # in Anthropic's paper, this is a step in the range [12500, 25000), [37500, 50000), [62500, 75000), [87500, 100000). 
-        if is_step_in_the_phase_of_investigating_neurons(step, resampling_interval, num_resamples):
+        if autoencoder.is_step_in_the_phase_of_investigating_neurons(step, resampling_interval, num_resamples):
             autoencoder.update_dead_neurons(output['f'])
 
         # free up memory
