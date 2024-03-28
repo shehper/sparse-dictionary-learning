@@ -1,5 +1,8 @@
 """
 Generate training data for sparse autoencoder. 
+
+Run on a Macbook as
+python -u generate_mlp_data.py --total_contexts=5000 --tokens_per_context=16 --dataset=shakespeare_char --model_dir=out-shakespeare-char 
 """
 import os
 import torch
@@ -94,12 +97,13 @@ for batch in range(num_batches):
           memory available: {psutil.virtual_memory().available / (1024**3):.2f} GB; memory usage: {psutil.virtual_memory().percent}%")
    
 ## save sae_data in n_files files
-os.makedirs(os.path.join(current_dir, 'sae_data'), exist_ok=True)
+data_dir = os.path.join(current_dir, 'data', dataset, f"{n_ffwd}")
+os.makedirs(data_dir, exist_ok=True)
 examples_per_file = total_contexts * tokens_per_context // n_files
 
-# now save the data in n_files files. Note file names are sae_data_{file_count+i}.
+# now save the data in n_files files.
 for i in range(n_files):
     # notice .clone(); else torch.save would need the storage required for the whole tensor sae_data 
     # https://github.com/pytorch/pytorch/issues/1995
-    torch.save(sae_data[i * examples_per_file: (i+1) * examples_per_file].clone(), f'sae_data/sae_data_{seed * n_files + i}.pt')
-    print(f'saved sae_data_{seed * n_files + i}.pt in sae_data')
+    torch.save(sae_data[i * examples_per_file: (i+1) * examples_per_file].clone(), f'{data_dir}/{seed * n_files + i}.pt')
+    print(f'{seed * n_files + i}.pt in {data_dir}')

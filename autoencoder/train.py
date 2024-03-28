@@ -53,14 +53,14 @@ def get_text_batch(data, block_size, batch_size):
 #TODO: load_data should be a method of a class. The class attributes include offset, current_partition and current_partition_index.
 def load_data(step, batch_size, current_partition_index, current_partition, n_partitions, examples_per_partition, offset):
     """A custom data loader specific for our needs.  
-    It assumes that data is stored in multiple files in the 'sae_data' folder. 
+    It assumes that data is stored in multiple files in data/dataset/n_ffwd.
     It selects a batch from 'current_partition' sequentially. When 'current_partition' reaches its end, it loads the next partition. 
     Input:
         step: current training step
         batch_size: batch size
-        current_partition_index: index of the current partition or file from sae_data folder
-        current_partition: current partition or file from sae_data folder
-        n_partitions: total number of files in sae_data
+        current_partition_index: index of the current partition or file from the data folder
+        current_partition: current partition or file from the data folder
+        n_partitions: total number of files in the data folder
         examples_per_partition: number of examples in each partition
     Returns:
         batch: batch of data
@@ -78,7 +78,7 @@ def load_data(step, batch_size, current_partition_index, current_partition, n_pa
         batch = current_partition[batch_start:].to(torch.float32)
         current_partition_index += 1
         del current_partition; gc.collect()
-        current_partition = torch.load(f'sae_data/sae_data_{current_partition_index}.pt')
+        current_partition = torch.load(f'{autoencoder_data_dir}/{current_partition_index}.pt')
         print(f'partition = {current_partition_index} of training data successfully loaded!')
         batch = torch.cat([batch, current_partition[:batch_size - remaining]]).to(torch.float32)
         offset = batch_size - remaining
@@ -139,24 +139,26 @@ if __name__ == '__main__':
     if compile:
         gpt = torch.compile(gpt) # requires PyTorch 2.0 (optional)
     config['block_size'] = block_size = gpt.config.block_size
+    n_ffwd = 4 * gpt.config.n_embd
 
-    ## LOAD THE FIRST FILE OF TRAINING DATA FOR AUTOENCODER 
-    # recall that mlp activations data was saved in multiple files in the folder 'sae_data' 
+    ## LOAD THE FIRST FILE OF AUTOENCODER TRAINING DATA 
+    # recall that mlp activations data might have been saved in multiple files in the folder data/dataset/n_ffwd.
     # we start by loading the first file here; other files are loaded inside load_data function as they are needed during training
-    n_partitions = len(next(os.walk('sae_data'))[2]) # number of files in sae_data folder
+    autoencoder_data_dir = os.path.join(os.path.abspath('.'), 'data', dataset, f"{n_ffwd}")
+    n_partitions = len(next(os.walk(autoencoder_data_dir))[2]) # number of files in autoencoder_data_dir
     current_partition_index = 0 # partition number
-    current_partition = torch.load(f'sae_data/sae_data_{current_partition_index}.pt') # current partition
-    examples_per_partition, n_ffwd = current_partition.shape # number of examples per partition, gpt d_mlp
+    current_partition = torch.load(f'{autoencoder_data_dir}/{current_partition_index}.pt') # current partition
+    examples_per_partition = current_partition.shape[0] # number of examples per partition, gpt d_mlp
     total_training_examples = n_partitions * examples_per_partition # total number of training examples for autoencoder
     offset = 0 # when partition number > 0, first 'offset' 
-    print(f'loaded the first partition of data from sae_data/sae_data_{current_partition_index}.pt')
+    print(f'loaded the first partition of data from {autoencoder_data_dir}/{current_partition_index}.pt')
     print(f'Approximate number of training examples: {total_training_examples}')
 
     memory = psutil.virtual_memory()
     print(f'Available memory after loading data: {memory.available / (1024**3):.2f} GB; memory usage: {memory.percent}%')
 
     ## LOAD DATA TO BE USED FOR NEURON RESAMPLING
-    data_for_resampling_neurons = torch.load('data_for_resampling_neurons.pt')
+    resampling_data = torch.load(f'{autoencoder_data_dir}/resampling_data/data.pt')
     memory = psutil.virtual_memory()
     print(f'loaded data or resampling neurons, available memory now: {memory.available / (1024**3):.2f} GB; memory usage: {memory.percent}%')
 
@@ -245,8 +247,8 @@ if __name__ == '__main__':
         
         # if step is a multiple of resampling interval, perform neuron resampling
         if (step+1) % resampling_interval == 0 and step < num_resamples * resampling_interval:
-            print(f'{len(autoencoder.dead_neurons)} to be resampled at step = {step}')
-            autoencoder.resample_neurons(data=data_for_resampling_neurons, optimizer=optimizer, batch_size=batch_size)
+            print(f'{len(autoencoder.dead_neurons)} neurons to be resampled at step = {step}')
+            autoencoder.resample_neurons(data=resampling_data, optimizer=optimizer, batch_size=batch_size)
         
 
         ### ------------ log info ----------- ######
