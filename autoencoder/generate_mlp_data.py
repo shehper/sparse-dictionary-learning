@@ -20,7 +20,7 @@ contexts_per_batch = 500
 tokens_per_context = 200 
 convert_to_f16 = False # save activations in Half dtype instead of Float
 dataset = 'openwebtext'
-model_dir = 'out' # ignored if init_from is not 'resume'
+model_dir = 'out' # directory name inside ../transformer that contains transformer model checkpoint
 n_files = 20 # number of files in which data will be saved 
 
 # -----------------------------------------------------------------------------
@@ -37,6 +37,7 @@ text_data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode
 ## load model
 ckpt_path = os.path.join(os.path.dirname(current_dir), 'transformer', model_dir, 'ckpt.pt')
 checkpoint = torch.load(ckpt_path, map_location=device)
+print(f'loaded transformer model checkpoint from {ckpt_path}')
 gptconf = GPTConfig(**checkpoint['model_args'])
 model = GPT(gptconf)
 state_dict = checkpoint['model']
