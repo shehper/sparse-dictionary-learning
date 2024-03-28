@@ -38,7 +38,7 @@ eval_interval = 1000 # number of training steps after which the autoencoder is e
 eval_batch_size = 16 # numnber of contexts in each text batch when evaluating the autoencoder model
 save_checkpoint = True # whether to save model, optimizer, etc or not
 save_interval = 10000 # number of training steps after which a checkpoint will be saved
-out_dir = 'out_autoencoder' # directory containing trained autoencoder model weights
+out_dir = 'out' # directory containing trained autoencoder model weights
 # and to be consistent with top_activations.py
 resampling_interval = 25000 # number of training steps after which neuron resampling will be performed
 num_resamples = 4 # number of times resampling is to be performed; it is done 4 times in Anthropic's paper
