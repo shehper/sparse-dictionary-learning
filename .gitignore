@@ -12,6 +12,8 @@ __pycache__/
 *.arrow
 *.ipynb
 *.css
+*.err
+*.out
 input.txt
 notes.md
 autoencoder.ipynb
