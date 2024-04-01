@@ -13,7 +13,8 @@ import sys
 
 ## Add the path to the transformer subdirectory as it contains model.py
 sys.path.insert(0, '../transformer')
-from model import GPTConfig, GPT
+from model import GPTConfig
+from hooked_model import HookedGPT
 
 ## define some parameters; these can be overwritten from command line
 device = 'cpu'
@@ -41,7 +42,7 @@ ckpt_path = os.path.join(os.path.dirname(current_dir), 'transformer', model_dir,
 checkpoint = torch.load(ckpt_path, map_location=device)
 print(f'loaded transformer model checkpoint from {ckpt_path}')
 gptconf = GPTConfig(**checkpoint['model_args'])
-model = GPT(gptconf)
+model = HookedGPT(gptconf)
 state_dict = checkpoint['model']
 compile = False # TODO: Don't know why I needed to set compile to False before loading the model..
 # TODO: I dont know why the next 4 lines are needed. state_dict does not seem to have any keys with unwanted_prefix.
@@ -83,7 +84,9 @@ for batch in range(num_batches):
     contexts = torch.stack([torch.from_numpy((text_data[i:i+block_size]).astype(np.int64)) for i in ix]) # (b, t)
     
     # compute MLP activations from the loaded model
-    activations = model.get_last_mlp_acts(contexts) # (b, t, n_ffwd)
+    _, _ = model(contexts)
+    activations = model.mlp_activation_hooks[0] # (b, t, n_ffwd)
+    model.clear_mlp_activation_hooks() # free up memory
     
     # pick tokens_per_context (n) tokens from each context; and flatten the first two dimensions
     data = torch.stack([activations[i, torch.randint(block_size, (tokens_per_context,)), :] for i in range(contexts_per_batch)]).view(-1, activations.shape[-1]) #(b*n, n_ffwd)

@@ -19,7 +19,8 @@ from write_html import *
 
 ## Add path to the transformer subdirectory as it contains GPT class in model.py
 sys.path.insert(0, '../transformer')
-from model import GPTConfig, GPT
+from model import GPTConfig
+from hooked_model import HookedGPT
 
 # hyperparameters 
 device = 'cuda' # change it to cpu
@@ -109,7 +110,7 @@ if __name__ == '__main__':
     gpt_ckpt_path = os.path.join(os.path.dirname(current_dir), 'transformer', gpt_dir, 'ckpt.pt')
     gpt_ckpt = torch.load(gpt_ckpt_path, map_location=device)
     gptconf = GPTConfig(**gpt_ckpt['model_args'])
-    gpt = GPT(gptconf)
+    gpt = HookedGPT(gptconf)
     state_dict = gpt_ckpt['model']
     compile = False # TODO: why do this?
     unwanted_prefix = '_orig_mod.' # TODO: why do this and the next three lines?
@@ -192,7 +193,9 @@ if __name__ == '__main__':
             else:
                 X_BT = X_NT[iter * B: (iter + 1) * B].to(device)
             # compute MLP activations 
-            mlp_acts_BTF = gpt.get_last_mlp_acts(X_BT) # TODO: Learn to use hooks instead? 
+            _, _ = gpt(X_BT)
+            mlp_acts_BTF = gpt.mlp_activation_hooks[0]
+            gpt.clear_mlp_activation_hooks() 
             # compute feature activations for features in this phase
             feature_acts_BTH = autoencoder.get_feature_acts(x=mlp_acts_BTF, s=phase*H, e=(phase+1)*H)
             # sample tokens from the context, and save feature activations and tokens for these tokens in data_MW.
