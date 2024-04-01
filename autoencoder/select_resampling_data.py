@@ -21,8 +21,15 @@ config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # directory where data is stored
 data_dir = os.path.join(os.path.abspath('.'), 'data', dataset, f"{n_ffwd}")
 
-# estimate the total number of files in data_dir and the number of examples to be sampled from each partition
-n_partitions = len(next(os.walk(data_dir))[2]) # number of files in data_dir
+# compute the total number of files in data_dir 
+try:
+    n_partitions = len(next(os.walk(data_dir))[2]) # number of files in data_dir
+    print(f"found data stored in {n_partitions} files in {data_dir}")
+except StopIteration:
+    raise ValueError(f"""No files found in {data_dir}. 
+                    Make sure to save training data in the correct directory and pass correct dataset and n_ffwd arguments.""")
+
+# compute the number of examples to be sampled from each partition
 examples_per_partition = resampling_data_size // n_partitions
 
 # initiate output tensor

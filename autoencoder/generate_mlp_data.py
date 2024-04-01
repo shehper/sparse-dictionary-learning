@@ -21,7 +21,6 @@ seed = 0
 total_contexts = int(2e6) # should take 770 GB 
 contexts_per_batch = 500
 tokens_per_context = 200 
-convert_to_f16 = False # save activations in Half dtype instead of Float
 dataset = 'openwebtext'
 model_dir = 'out' # directory name inside ../transformer that contains transformer model checkpoint
 n_files = 20 # number of files in which data will be saved 
@@ -66,8 +65,7 @@ print(f"Total memory: {memory.total / (1024**3):.2f} GB")
 print(f"Available memory before initiating sae_data: {memory.available / (1024**3):.2f} GB; memory usage: {memory.percent}%")
 
 ## initiate a torch tensor that will save data
-data_dtype = torch.float16 if convert_to_f16 else torch.float32
-sae_data = torch.zeros(total_contexts * tokens_per_context, n_ffwd, dtype=data_dtype)
+sae_data = torch.zeros(total_contexts * tokens_per_context, n_ffwd)
 shuffled_indices = torch.randperm(total_contexts * tokens_per_context)
 
 # Print memory info after initiating sae_data; a large amount of memory must have been used for this
@@ -85,7 +83,7 @@ for batch in range(num_batches):
     contexts = torch.stack([torch.from_numpy((text_data[i:i+block_size]).astype(np.int64)) for i in ix]) # (b, t)
     
     # compute MLP activations from the loaded model
-    activations = model.get_last_mlp_acts(contexts).to(dtype=data_dtype) # (b, t, n_ffwd)
+    activations = model.get_last_mlp_acts(contexts) # (b, t, n_ffwd)
     
     # pick tokens_per_context (n) tokens from each context; and flatten the first two dimensions
     data = torch.stack([activations[i, torch.randint(block_size, (tokens_per_context,)), :] for i in range(contexts_per_batch)]).view(-1, activations.shape[-1]) #(b*n, n_ffwd)
