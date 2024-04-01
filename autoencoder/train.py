@@ -17,6 +17,7 @@ import psutil
 import gc
 import sys
 from autoencoder import AutoEncoder
+from resource_loader import ResourceLoader
 
 ## Add path to the transformer subdirectory as it contains GPT class in model.py
 sys.path.insert(0, '../transformer')
@@ -44,51 +45,6 @@ out_dir = 'out' # directory containing trained autoencoder model weights
 resampling_interval = 25000 # number of training steps after which neuron resampling will be performed
 num_resamples = 4 # number of times resampling is to be performed; it is done 4 times in Anthropic's paper
 
-def get_text_batch(data, block_size, batch_size):
-    """a simplfied version of nanoGPT get_batch function to get a batch of text data (simplification: it does NOT send the batch to a GPU)"""
-    ix = torch.randint(len(data) - block_size, (batch_size,))
-    x = torch.stack([torch.from_numpy((data[i:i+block_size]).astype(np.int64)) for i in ix])
-    y = torch.stack([torch.from_numpy((data[i+1:i+1+block_size]).astype(np.int64)) for i in ix])
-    return x, y
-
-#TODO: load_data should be a method of a class. The class attributes include offset, current_partition and current_partition_index.
-def load_data(step, batch_size, current_partition_index, current_partition, n_partitions, examples_per_partition, offset):
-    """A custom data loader specific for our needs.  
-    It assumes that data is stored in multiple files in data/dataset/n_ffwd.
-    It selects a batch from 'current_partition' sequentially. When 'current_partition' reaches its end, it loads the next partition. 
-    Input:
-        step: current training step
-        batch_size: batch size
-        current_partition_index: index of the current partition or file from the data folder
-        current_partition: current partition or file from the data folder
-        n_partitions: total number of files in the data folder
-        examples_per_partition: number of examples in each partition
-    Returns:
-        batch: batch of data
-        current_partition: different from the input current_partition if the input current_partition 
-                            had less than batch_size examples that have not been previously selected
-        current_partition_index: index of current_partition
-        offset: number of examples of current_partition that 
-    """
-    batch_start = step * batch_size - current_partition_index * examples_per_partition - offset # index of the start of the batch in the current partition
-    batch_end = (step + 1) * batch_size - current_partition_index * examples_per_partition - offset # index of the end of the batch in the current partition
-    # check if the end of the batch is beyond the current partition
-    if batch_end > examples_per_partition and current_partition_index < n_partitions - 1:
-        # handle transition to next part
-        remaining = examples_per_partition - batch_start
-        batch = current_partition[batch_start:].to(torch.float32)
-        current_partition_index += 1
-        del current_partition; gc.collect()
-        current_partition = torch.load(f'{autoencoder_data_dir}/{current_partition_index}.pt')
-        print(f'partition = {current_partition_index} of training data successfully loaded!')
-        batch = torch.cat([batch, current_partition[:batch_size - remaining]]).to(torch.float32)
-        offset = batch_size - remaining
-    else:
-        # normal batch processing
-        batch = current_partition[batch_start:batch_end].to(torch.float32)
-    assert len(batch) == batch_size, f"length of batch = {len(batch)} at step = {step} and partition number = {current_partition_index} is not correct"
-    return batch, current_partition, current_partition_index, offset
-
 def get_histogram_image(data, bins='auto'):
     """plots a histogram for data and converts it to a PIL image so that it can be logged with wandb"""
     _, ax = plt.subplots()
@@ -103,247 +59,222 @@ def get_histogram_image(data, bins='auto'):
 
 slice_fn = lambda storage: storage[iter * eval_batch_size: (iter + 1) * eval_batch_size] # slices a torch tensor; used in evaluation phase
 
-if __name__ == '__main__':
-
-    # -----------------------------------------------------------------------------
-    config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
-    exec(open('configurator.py').read()) # overrides from command line or config file
-    config = {k: globals()[k] for k in config_keys} # will be useful for logging
-    # -----------------------------------------------------------------------------
-
-    # variables that depend on input parameters
-    config['device_type'] = device_type = 'cuda' if 'cuda' in device else 'cpu'
-    config['eval_tokens'] = eval_tokens = eval_contexts * tokens_per_eval_context
-        
-    torch.manual_seed(seed)
-
-    ## load tokenized text data
-    current_dir = os.path.abspath('.')
-    data_dir = os.path.join(os.path.dirname(current_dir), 'transformer', 'data', dataset)
-    text_data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
-
-    ## load GPT model --- we need it to compute reconstruction nll and nll score
-    ckpt_path = os.path.join(os.path.dirname(current_dir), 'transformer', gpt_dir, 'ckpt.pt')
-    checkpoint = torch.load(ckpt_path, map_location=device)
-    gptconf = GPTConfig(**checkpoint['model_args'])
-    gpt = HookedGPT(gptconf)
-    state_dict = checkpoint['model']
-    compile = False # TODO: Don't know why I needed to set compile to False before loading the model..
-    # TODO: Also, I dont know why the next 4 lines are needed. state_dict does not seem to have any keys with unwanted_prefix.
-    unwanted_prefix = '_orig_mod.' 
-    for k,v in list(state_dict.items()):
-        if k.startswith(unwanted_prefix):
-            state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
-    gpt.load_state_dict(state_dict)
-    gpt.eval()
-    gpt.to(device)
-    if compile:
-        gpt = torch.compile(gpt) # requires PyTorch 2.0 (optional)
-    config['block_size'] = block_size = gpt.config.block_size
-    n_ffwd = 4 * gpt.config.n_embd
-
-    ## LOAD THE FIRST FILE OF AUTOENCODER TRAINING DATA 
-    # recall that mlp activations data might have been saved in multiple files in the folder data/dataset/n_ffwd.
-    # we start by loading the first file here; other files are loaded inside load_data function as they are needed during training
-    autoencoder_data_dir = os.path.join(os.path.abspath('.'), 'data', dataset, f"{n_ffwd}")
-    n_partitions = len(next(os.walk(autoencoder_data_dir))[2]) # number of files in autoencoder_data_dir
-    current_partition_index = 0 # partition number
-    current_partition = torch.load(f'{autoencoder_data_dir}/{current_partition_index}.pt') # current partition
-    examples_per_partition = current_partition.shape[0] # number of examples per partition, gpt d_mlp
-    total_training_examples = n_partitions * examples_per_partition # total number of training examples for autoencoder
-    offset = 0 # when partition number > 0, first 'offset' 
-    print(f'loaded the first partition of data from {autoencoder_data_dir}/{current_partition_index}.pt')
-    print(f'Approximate number of training examples: {total_training_examples}')
-
-    memory = psutil.virtual_memory()
-    print(f'Available memory after loading data: {memory.available / (1024**3):.2f} GB; memory usage: {memory.percent}%')
-
-    ## LOAD DATA TO BE USED FOR NEURON RESAMPLING
-    resampling_data = torch.load(f'{autoencoder_data_dir}/resampling_data/data.pt')
-    memory = psutil.virtual_memory()
-    print(f'loaded data or resampling neurons, available memory now: {memory.available / (1024**3):.2f} GB; memory usage: {memory.percent}%')
-
-    ## PREPARE FOR EVALUATION
-    # We need text data during evaluation so that we can compute the reconstructed NLL loss and reconstructed NLL score
-    # We pick a dataset of eval_contexts (=10000 by default) contexts, each of length block_size (=1024 by default)
-    # We compute and save MLP activations and residual stream of the transformer model on these examples
-    # We also compute the full transformer loss and MLP-ablated loss 
-    # Finally, we pre-select indices of tokens_per_eval_context (=10 by default, as in Anthropic's paper) tokens in each context
-    # and save it in token_indices. These will be used for the calculation of feature activation counts during evaluation 
-    # TODO: There is probably no need to pre-select these indices. Perhaps remove token_indices and sample tokens during evaluation on the go?
-    X, Y = get_text_batch(text_data, block_size=block_size, batch_size=eval_contexts) # (eval_contexts, block_size)
-    token_indices = torch.randint(block_size, (eval_contexts, tokens_per_eval_context)) # (eval_contexts, tokens_per_eval_context) 
-    num_eval_batches = eval_contexts // eval_batch_size
-    ablated_losses = torch.zeros(num_eval_batches,)
-    for iter in range(num_eval_batches):    
-        print(f'iter = {iter}/{num_eval_batches} in computation of mlp_activations and residual_stream for evaluation data')
-        # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
-        x = slice_fn(X).pin_memory().to(device, non_blocking=True) if device_type == 'cuda' else slice_fn(X).to(device) # select a batch of text data inputs
-        y = slice_fn(Y).pin_memory().to(device, non_blocking=True) if device_type == 'cuda' else slice_fn(Y).to(device) # select a batch of text data outputs
-        ablated_losses[iter] = gpt(x, y, mode="replace")[1].item()
-    ablated_loss = ablated_losses.mean()
-        
-    memory = psutil.virtual_memory()
-    print(f'computed mlp activations and losses on eval data; available memory: {memory.available / (1024**3):.2f} GB; memory usage: {memory.percent}%')
 
 
-    ## INITIATE AUTOENCODER AND OPTIMIZER
-    autoencoder = AutoEncoder(n_ffwd, n_features, lam=l1_coeff, resampling_interval=resampling_interval).to(device)
-    optimizer = torch.optim.Adam(autoencoder.parameters(), lr=learning_rate) 
+# -----------------------------------------------------------------------------
+config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
+exec(open('configurator.py').read()) # overrides from command line or config file
+config = {k: globals()[k] for k in config_keys} # will be useful for logging
+# -----------------------------------------------------------------------------
+
+# variables that depend on input parameters
+config['device_type'] = device_type = 'cuda' if 'cuda' in device else 'cpu'
+config['eval_tokens'] = eval_tokens = eval_contexts * tokens_per_eval_context
     
-    ## prepare for logging and saving checkpoints
-    run_name = f'{time.time():.2f}-autoencoder-{dataset}'
-    if wandb_log:
-        import wandb
-        wandb.init(project=f'sparse-autoencoder-{dataset}', name=run_name, config=config)
-    if save_checkpoint:
-        os.makedirs(os.path.join(out_dir, run_name), exist_ok=True)
+torch.manual_seed(seed)
+resourceloader = ResourceLoader(dataset=dataset, 
+                            gpt_dir=gpt_dir,
+                            batch_size=batch_size,
+                            device=device,
+                            )
 
-    ## TRAINING LOOP
-    start_time = time.time()
-    num_steps = total_training_examples // batch_size
-    for step in range(num_steps):
+# load tokenized text dataset <-- openwebtext, shakespeare_char, etc
+text_data = resourceloader.load_text_data() 
 
-        if step == 200:
-            break
- 
-        ## load a batch of data        
-        batch, current_partition, current_partition_index, offset = load_data(step, batch_size, current_partition_index, current_partition, n_partitions, examples_per_partition, offset)
-        batch = batch.pin_memory().to(device, non_blocking=True) if device_type == 'cuda' else batch.to(device)
+## load GPT model weights --- we need it to compute reconstruction nll and nll score
+gpt = resourceloader.load_transformer_model()
+# TODO: rename gpt to transformer, make sure it's consistent over the entire codebase
 
-        # forward, backward pass
-        optimizer.zero_grad(set_to_none=True) 
-        output = autoencoder(batch) # f has shape (batch_size, n_features) 
-        output['loss'].backward()
+## LOAD THE FIRST FILE OF TRAINING DATA FOR AUTOENCODER 
+# autoencoder training data may have been saved in multiple files in the folder 'sae_data' # TODO: change folder name and path
+# we start by loading the first file
+autoencoder_data = resourceloader.load_autoencoder_data()
 
-        # remove component of gradient parallel to weight # TODO: Is there an alternative to this? how about some proximal policy type update?
-        autoencoder.remove_parallel_component_of_decoder_gradient()
+## load data for neuron resampling
+# this data is used during neuron resampling procedure
+resampling_data = resourceloader.load_resampling_data()
+
+# eval data
+# TODO: call (X, Y) (X_eval, Y_eval) instead.
+# TODO: token_indices
+# TODO: should I place loss estimation inside a function?
+X, Y = resourceloader.get_text_batch(num_contexts=eval_contexts)
+token_indices = torch.randint(resourceloader.block_size, (eval_contexts, tokens_per_eval_context)) # (eval_contexts, tokens_per_eval_context) 
+# estimate MLP ablated loss 
+num_eval_batches = eval_contexts // eval_batch_size
+ablated_losses = torch.zeros(num_eval_batches,)
+for iter in range(num_eval_batches):    
+    print(f'iter = {iter}/{num_eval_batches} in computation of mlp_activations and residual_stream for evaluation data')
+    # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
+    x = slice_fn(X).pin_memory().to(device, non_blocking=True) if device_type == 'cuda' else slice_fn(X).to(device) # select a batch of text data inputs
+    y = slice_fn(Y).pin_memory().to(device, non_blocking=True) if device_type == 'cuda' else slice_fn(Y).to(device) # select a batch of text data outputs
+    ablated_losses[iter] = gpt(x, y, mode="replace")[1].item()
+ablated_loss = ablated_losses.mean()
+    
+
+## INITIATE AUTOENCODER AND OPTIMIZER
+# TODO: n and m should be called n_input, n_latents instead
+autoencoder = AutoEncoder(n = 4 * resourceloader.transformer.config.n_embd, 
+                            m = n_features, 
+                            lam = l1_coeff, 
+                            resampling_interval = resampling_interval).to(device)
+optimizer = torch.optim.Adam(autoencoder.parameters(), lr=learning_rate) 
+
+## prepare for logging and saving checkpoints
+run_name = f'{time.time():.2f}-autoencoder-{dataset}'
+if wandb_log:
+    import wandb
+    wandb.init(project=f'sparse-autoencoder-{dataset}', name=run_name, config=config)
+if save_checkpoint:
+    os.makedirs(os.path.join(out_dir, run_name), exist_ok=True)
+
+## TRAINING LOOP
+start_time = time.time()
+num_steps = resourceloader.num_examples_total  // batch_size
+for step in range(num_steps):
+
+    if step == 200:
+        break
+
+    ## load a batch of data    
+    batch = resourceloader.get_autoencoder_data_batch(step)    
+    if device_type == 'cuda':
+        batch = batch.pin_memory().to(device, non_blocking=True)
+    else:
+        batch = batch.to(device)
+
+    # forward, backward pass
+    optimizer.zero_grad(set_to_none=True) 
+    output = autoencoder(batch) # f has shape (batch_size, n_features) 
+    output['loss'].backward()
+
+    # remove component of gradient parallel to weight # TODO: Is there an alternative to this? how about some proximal policy type update?
+    autoencoder.remove_parallel_component_of_decoder_gradient()
+    
+    # step
+    optimizer.step()
+
+    # periodically update the norm of dictionary vectors to make sure they don't deviate too far from 1.
+    if step % 1000 == 0: 
+        autoencoder.normalize_decoder_columns()
+
+    ## ------------ perform neuron resampling ----------- ######
+    # check if at this step, we should start investigating dead/alive neurons
+    # in Anthropic's paper, this is done at step # 12500, 37500, 62500 and 87500, i.e. an odd multiple of (resampling_interval//2).
+    if autoencoder.is_step_start_of_investigating_dead_neurons(step, resampling_interval, num_resamples):
+        print(f'initiating investigation of dead neurons at step = {step}')
+        autoencoder.initiate_dead_neurons()
+
+    # check if this step falls in a phase where we should check for active neurons
+    # in Anthropic's paper, this is a step in the range [12500, 25000), [37500, 50000), [62500, 75000), [87500, 100000). 
+    if autoencoder.is_step_in_the_phase_of_investigating_neurons(step, resampling_interval, num_resamples):
+        autoencoder.update_dead_neurons(output['f'])
+
+    # free up memory
+    del batch, output; gc.collect(); torch.cuda.empty_cache() 
+    
+    # if step is a multiple of resampling interval, perform neuron resampling
+    if (step+1) % resampling_interval == 0 and step < num_resamples * resampling_interval:
+        print(f'{len(autoencoder.dead_neurons)} neurons to be resampled at step = {step}')
+        autoencoder.resample_neurons(data=resampling_data, optimizer=optimizer, batch_size=batch_size)
+    
+
+    ### ------------ log info ----------- ######
+    if (step % eval_interval == 0) or step == num_steps - 1:
+        autoencoder.eval() 
         
-        # step
-        optimizer.step()
-
-        # periodically update the norm of dictionary vectors to make sure they don't deviate too far from 1.
-        if step % 1000 == 0: 
-            autoencoder.normalize_decoder_columns()
-
-        ## ------------ perform neuron resampling ----------- ######
-        # check if at this step, we should start investigating dead/alive neurons
-        # in Anthropic's paper, this is done at step # 12500, 37500, 62500 and 87500, i.e. an odd multiple of (resampling_interval//2).
-        if autoencoder.is_step_start_of_investigating_dead_neurons(step, resampling_interval, num_resamples):
-            print(f'initiating investigation of dead neurons at step = {step}')
-            autoencoder.initiate_dead_neurons()
-
-        # check if this step falls in a phase where we should check for active neurons
-        # in Anthropic's paper, this is a step in the range [12500, 25000), [37500, 50000), [62500, 75000), [87500, 100000). 
-        if autoencoder.is_step_in_the_phase_of_investigating_neurons(step, resampling_interval, num_resamples):
-            autoencoder.update_dead_neurons(output['f'])
-
-        # free up memory
-        del batch, output; gc.collect(); torch.cuda.empty_cache() 
-        
-        # if step is a multiple of resampling interval, perform neuron resampling
-        if (step+1) % resampling_interval == 0 and step < num_resamples * resampling_interval:
-            print(f'{len(autoencoder.dead_neurons)} neurons to be resampled at step = {step}')
-            autoencoder.resample_neurons(data=resampling_data, optimizer=optimizer, batch_size=batch_size)
-        
-
-        ### ------------ log info ----------- ######
-        if (step % eval_interval == 0) or step == num_steps - 1:
-            autoencoder.eval() 
-            log_dict = {'losses/reconstructed_nll': 0, # log-likelihood loss using the output of autoencoder as MLP activations in the transformer model 
-                        'losses/feature_activation_sparsity': 0, # L0-norm; average number of non-zero components of the feature activation vector f 
-                        'losses/autoencoder_loss': 0, 'losses/mse_loss': 0, 'losses/l1_loss': 0, 
-                        }
-            feature_activation_counts = torch.zeros(n_features, dtype=torch.float32) # number of tokens on which each feature is active
-            start_log_time = time.time()
-
-            transformer_losses = torch.zeros(num_eval_batches,)
-
-            for iter in range(num_eval_batches):
-                
-                x = slice_fn(X).pin_memory().to(device, non_blocking=True) if device_type == 'cuda' else slice_fn(X).to(device) # select a batch of text data inputs
-                y = slice_fn(Y).pin_memory().to(device, non_blocking=True) if device_type == 'cuda' else slice_fn(Y).to(device) # select a batch of text data outputs
-
-                transformer_losses[iter] = gpt(x, y)[1]
-                batch_mlp_activations = gpt.mlp_activation_hooks[0]
-
-                with torch.no_grad():
-                    output = autoencoder(batch_mlp_activations) # output = {'loss': loss, 'f': f, 'reconst_acts': reconst_acts, 'mseloss': mseloss, 'l1loss': l1loss}
-      
-                f = output['f'].to('cpu') # (eval_batch_size, block_size, n_features)
-                
-                # restrict f to the subset of tokens_per_eval_context tokens determined by token_indices
-                batch_token_indices = slice_fn(token_indices) # (eval_batch_size, tokens_per_eval_context)
-                f_subset = torch.gather(f, 1, batch_token_indices.unsqueeze(-1).expand(-1, -1, n_features)) # (eval_batch_size, tokens_per_eval_context, n_features)  
-
-                # for each feature, calculate the TOTAL number of tokens on which it is active; shape: (n_features, ) 
-                feature_activation_counts += torch.count_nonzero(f_subset, dim=[0, 1]) # (n_features, )
-
-                # calculat the AVERAGE number of non-zero entries in each feature vector
-                log_dict['losses/feature_activation_sparsity'] += torch.mean(torch.count_nonzero(f_subset, dim=-1), dtype=torch.float32).item()
- 
-                del batch_mlp_activations, f, f_subset; gc.collect(); torch.cuda.empty_cache()
-
-                # Compute reconstructed loss from batch_reconstructed_activations
-                _, reconstructed_nll = gpt(x, y, mode="replace", replacement_tensor=output['reconst_acts'])
-                log_dict['losses/reconstructed_nll'] += reconstructed_nll
-                log_dict['losses/autoencoder_loss'] += output['loss'].item() 
-                log_dict['losses/mse_loss'] += output['mse_loss'].item()
-                log_dict['losses/l1_loss'] += output['l1_loss'].item()
-                # del batch_res_stream, output, batch_targets; gc.collect(); torch.cuda.empty_cache()
-                del output; gc.collect(); torch.cuda.empty_cache()
-
-            transformer_loss = transformer_losses.mean()
-
-            # take mean of all loss values by dividing by the number of evaluation batches
-            log_dict = {key: val/num_eval_batches for key, val in log_dict.items()}
-
-            # add nll score to log_dict
-            log_dict['losses/nll_score'] = (transformer_loss - log_dict['losses/reconstructed_nll'])/(transformer_loss - ablated_loss).item()
-            
-            # compute feature densities and plot feature density histogram
-            log_feature_activation_density = np.log10(feature_activation_counts[feature_activation_counts != 0]/(eval_tokens)) # (n_features,)
-            feature_density_histogram = get_histogram_image(log_feature_activation_density)
-            print(f"batch: {step}/{num_steps}, time per step: {(time.time()-start_time)/(step+1):.2f}, logging time = {(time.time()-start_log_time):.2f}")
-            # print(log_dict)
-
-            # log more metrics
-            if wandb_log:
-                log_dict.update(
-                        {'debug/mean_dictionary_vector_length': torch.mean(torch.linalg.vector_norm(autoencoder.dec.weight, dim=0)),
-                        'feature_density/feature_density_histograms': wandb.Image(feature_density_histogram),
-                        'feature_density/min_log_feat_density': log_feature_activation_density.min().item() if len(log_feature_activation_density) > 0 else -100,
-                        'feature_density/num_neurons_with_feature_density_above_1e-3': (log_feature_activation_density > -3).sum(),
-                        'feature_density/num_neurons_with_feature_density_below_1e-3': (log_feature_activation_density < -3).sum(),
-                        'feature_density/num_neurons_with_feature_density_below_1e-4': (log_feature_activation_density < -4).sum(), 
-                        'feature_density/num_neurons_with_feature_density_below_1e-5': (log_feature_activation_density < -5).sum(),
-                        'feature_density/num_alive_neurons': len(log_feature_activation_density),
-                        'training_step': step, 
-                        'training_examples': step * batch_size
-                        })            
-                wandb.log(log_dict)
-
-            autoencoder.train()
-                
-        ### ------------ save a checkpoint ----------- ######
-        if save_checkpoint and step > 0 and (step % save_interval == 0 or step == num_steps - 1):
-            checkpoint = {
-                    'autoencoder': autoencoder.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'log_dict': log_dict,
-                    'config': config,
-                    'feature_activation_counts': feature_activation_counts, # may be used later to identify alive vs dead neurons
+        log_dict = {'losses/reconstructed_nll': 0, # log-likelihood loss using the output of autoencoder as MLP activations in the transformer model 
+                    'losses/feature_activation_sparsity': 0, # L0-norm; average number of non-zero components of the feature activation vector f 
+                    'losses/autoencoder_loss': 0, 'losses/mse_loss': 0, 'losses/l1_loss': 0, 
                     }
-            print(f"saving checkpoint to {out_dir}/{run_name} at training step = {step}")
-            torch.save(checkpoint, os.path.join(out_dir, run_name, 'ckpt.pt'))
+        feature_activation_counts = torch.zeros(n_features, dtype=torch.float32) # number of tokens on which each feature is active
+        start_log_time = time.time()
+
+        transformer_losses = torch.zeros(num_eval_batches,)
+
+        for iter in range(num_eval_batches):
+            
+            x = slice_fn(X).pin_memory().to(device, non_blocking=True) if device_type == 'cuda' else slice_fn(X).to(device) # select a batch of text data inputs
+            y = slice_fn(Y).pin_memory().to(device, non_blocking=True) if device_type == 'cuda' else slice_fn(Y).to(device) # select a batch of text data outputs
+
+            transformer_losses[iter] = gpt(x, y)[1]
+            batch_mlp_activations = gpt.mlp_activation_hooks[0]
+
+            with torch.no_grad():
+                output = autoencoder(batch_mlp_activations) # output = {'loss': loss, 'f': f, 'reconst_acts': reconst_acts, 'mseloss': mseloss, 'l1loss': l1loss}
+    
+            f = output['f'].to('cpu') # (eval_batch_size, block_size, n_features)
+            
+            # restrict f to the subset of tokens_per_eval_context tokens determined by token_indices
+            batch_token_indices = slice_fn(token_indices) # (eval_batch_size, tokens_per_eval_context)
+            f_subset = torch.gather(f, 1, batch_token_indices.unsqueeze(-1).expand(-1, -1, n_features)) # (eval_batch_size, tokens_per_eval_context, n_features)  
+
+            # for each feature, calculate the TOTAL number of tokens on which it is active; shape: (n_features, ) 
+            feature_activation_counts += torch.count_nonzero(f_subset, dim=[0, 1]) # (n_features, )
+
+            # calculat the AVERAGE number of non-zero entries in each feature vector
+            log_dict['losses/feature_activation_sparsity'] += torch.mean(torch.count_nonzero(f_subset, dim=-1), dtype=torch.float32).item()
+
+            del batch_mlp_activations, f, f_subset; gc.collect(); torch.cuda.empty_cache()
+
+            # Compute reconstructed loss from batch_reconstructed_activations
+            _, reconstructed_nll = gpt(x, y, mode="replace", replacement_tensor=output['reconst_acts'])
+            log_dict['losses/reconstructed_nll'] += reconstructed_nll
+            log_dict['losses/autoencoder_loss'] += output['loss'].item() 
+            log_dict['losses/mse_loss'] += output['mse_loss'].item()
+            log_dict['losses/l1_loss'] += output['l1_loss'].item()
+            # del batch_res_stream, output, batch_targets; gc.collect(); torch.cuda.empty_cache()
+            del output; gc.collect(); torch.cuda.empty_cache()
+
+        transformer_loss = transformer_losses.mean()
+
+        # take mean of all loss values by dividing by the number of evaluation batches
+        log_dict = {key: val/num_eval_batches for key, val in log_dict.items()}
+
+        # add nll score to log_dict
+        log_dict['losses/nll_score'] = (transformer_loss - log_dict['losses/reconstructed_nll'])/(transformer_loss - ablated_loss).item()
+        
+        # compute feature densities and plot feature density histogram
+        log_feature_activation_density = np.log10(feature_activation_counts[feature_activation_counts != 0]/(eval_tokens)) # (n_features,)
+        feature_density_histogram = get_histogram_image(log_feature_activation_density)
+        print(f"batch: {step}/{num_steps}, time per step: {(time.time()-start_time)/(step+1):.2f}, logging time = {(time.time()-start_log_time):.2f}")
+        # print(log_dict)
+
+        # log more metrics
+        if wandb_log:
+            log_dict.update(
+                    {'debug/mean_dictionary_vector_length': torch.mean(torch.linalg.vector_norm(autoencoder.dec.weight, dim=0)),
+                    'feature_density/feature_density_histograms': wandb.Image(feature_density_histogram),
+                    'feature_density/min_log_feat_density': log_feature_activation_density.min().item() if len(log_feature_activation_density) > 0 else -100,
+                    'feature_density/num_neurons_with_feature_density_above_1e-3': (log_feature_activation_density > -3).sum(),
+                    'feature_density/num_neurons_with_feature_density_below_1e-3': (log_feature_activation_density < -3).sum(),
+                    'feature_density/num_neurons_with_feature_density_below_1e-4': (log_feature_activation_density < -4).sum(), 
+                    'feature_density/num_neurons_with_feature_density_below_1e-5': (log_feature_activation_density < -5).sum(),
+                    'feature_density/num_alive_neurons': len(log_feature_activation_density),
+                    'training_step': step, 
+                    'training_examples': step * batch_size
+                    })            
+            wandb.log(log_dict)
+
+        autoencoder.train()
+            
+    ### ------------ save a checkpoint ----------- ######
+    if save_checkpoint and step > 0 and (step % save_interval == 0 or step == num_steps - 1):
+        checkpoint = {
+                'autoencoder': autoencoder.state_dict(),
+                'optimizer': optimizer.state_dict(),
+                'log_dict': log_dict,
+                'config': config,
+                'feature_activation_counts': feature_activation_counts, # may be used later to identify alive vs dead neurons
+                }
+        print(f"saving checkpoint to {out_dir}/{run_name} at training step = {step}")
+        torch.save(checkpoint, os.path.join(out_dir, run_name, 'ckpt.pt'))
 
 
-    if wandb_log:
-        wandb.finish()    
-    print(f'Finished training after training on {num_steps * batch_size} examples')
+if wandb_log:
+    wandb.finish()    
+print(f'Finished training after training on {num_steps * batch_size} examples')
 
 
 # TODO: Update my training loop and load_data function to including the last few examples with count < batch_size. As it is, I am ignoring them
 # TODO: compile the gpt model and sae model for faster training?
-# TODO: does the dtype of mlp activations affect the AutoEncoder performance?
-# TODO: Can I somehow get more training data? Or train on repeated data? That might bring more neurons to life. 
