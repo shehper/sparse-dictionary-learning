@@ -8,6 +8,7 @@ python -u select_resampling_data.py --resampling_data_size=200 --dataset=shakesp
 import torch
 import os
 # give dataset and n_ffwd to access the correct data directory from which we resample data
+seed = 0
 dataset = 'openwebtext'
 n_ffwd = 512
 resampling_data_size = 4*819200 # ~ 3.3M
@@ -17,6 +18,8 @@ config_keys = [k for k,v in globals().items() if not k.startswith('_') and isins
 exec(open('configurator.py').read()) # overrides from command line or config file
 config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
+
+torch.manual_seed(seed)
 
 # directory where data is stored
 data_dir = os.path.join(os.path.abspath('.'), 'data', dataset, f"{n_ffwd}")

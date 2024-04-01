@@ -11,14 +11,13 @@ python prepare.py --seed=1
 """
 import os
 import torch
-import numpy as np
 import time
 import psutil
 from resource_loader import ResourceLoader
 
 ## define some parameters; these can be overwritten from command line
-device = 'cpu'
 seed = 0
+device = 'cpu'
 total_contexts = int(2e6) # number of contexts to compute MLP activations on
 contexts_per_batch = 500 
 tokens_per_context = 200 # number of tokens from each context window to evaluate MLP activations on
