@@ -13,7 +13,7 @@ from model import GPTConfig
 from hooked_model import HookedGPT
 
 class ResourceLoader:
-    def __init__(self, dataset, gpt_dir, batch_size, device):
+    def __init__(self, dataset, gpt_dir, batch_size=8192, device='cpu'):
         # directories, datasets, etc
         self.dataset = dataset # openwebtext, shakespeare_char, etc
         self.curr_dir = os.path.abspath('.') # after converting code to a package, this might not be needed
