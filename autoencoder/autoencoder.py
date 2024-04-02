@@ -48,9 +48,15 @@ class AutoEncoder(nn.Module):
         return self.decoder(encoded)
 
     def calculate_loss(self, x, encoded, reconstructed):
-        mse_loss = F.mse_loss(reconstructed, x)
-        l1_loss = F.l1_loss(encoded, torch.zeros_like(encoded), reduction='sum') / encoded.shape[0]
+        mse_loss = self.mse_loss(reconstructed, x)
+        l1_loss = self.l1_loss(encoded)
         return mse_loss + self.lam * l1_loss
+
+    def mse_loss(self, reconstructed, original):
+        return F.mse_loss(reconstructed, original)
+
+    def l1_loss(self, encoded):
+        return F.l1_loss(encoded, torch.zeros_like(encoded), reduction='sum') / encoded.shape[0]
 
     @torch.no_grad()
     def get_feature_activations(self, inputs, start_idx, end_idx):
