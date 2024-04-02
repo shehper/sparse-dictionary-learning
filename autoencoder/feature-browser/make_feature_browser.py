@@ -15,7 +15,7 @@ import sys
 import gc
 import psutil
 from autoencoder import AutoEncoder
-from write_html import *
+from html_functions import *
 
 ## Add path to the transformer subdirectory as it contains GPT class in model.py
 sys.path.insert(0, '../transformer')
