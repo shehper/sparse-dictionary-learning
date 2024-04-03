@@ -61,7 +61,6 @@ class ResourceLoader:
         self.transformer.eval()
         self.transformer.to(self.device)
         self.n_ffwd = self.transformer.config.n_embd * 4
-        self.block_size = self.transformer.config.block_size
         return self.transformer
 
     def load_autoencoder_data(self):
@@ -74,9 +73,10 @@ class ResourceLoader:
         return self.autoencoder_data
 
     def get_text_batch(self, num_contexts):
-        ix = torch.randint(len(self.text_data) - self.block_size, (num_contexts,))
-        X = torch.stack([torch.from_numpy((self.text_data[i:i+self.block_size]).astype(np.int64)) for i in ix])
-        Y = torch.stack([torch.from_numpy((self.text_data[i+1:i+1+self.block_size]).astype(np.int64)) for i in ix])
+        block_size = self.transformer.config.block_size
+        ix = torch.randint(len(self.text_data) - block_size, (num_contexts,))
+        X = torch.stack([torch.from_numpy((self.text_data[i:i+block_size]).astype(np.int64)) for i in ix])
+        Y = torch.stack([torch.from_numpy((self.text_data[i+1:i+1+block_size]).astype(np.int64)) for i in ix])
         return X.to(device=self.device), Y.to(device=self.device)
     
     def get_autoencoder_data_batch(self, step):
