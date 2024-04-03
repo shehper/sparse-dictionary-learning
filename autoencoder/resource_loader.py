@@ -13,21 +13,19 @@ from model import GPTConfig
 from hooked_model import HookedGPT
 
 class ResourceLoader:
-    def __init__(self, dataset, gpt_dir, batch_size=8192, device='cpu'):
+    def __init__(self, dataset, gpt_dir, device='cpu'):
         # directories, datasets, etc
         self.dataset = dataset # openwebtext, shakespeare_char, etc
         self.gpt_dir = gpt_dir # subdirectory (of transformer) contraining transformer weights
         self.device = device # for models' weights; (large) data is mostly stored in CPU RAM
 
-        # models (to be loaded from checkpoints)
-        self.transformer = None
-        self.autoencoder = None 
-
-        # datasets 
+        # transformer model weights and dataset 
         self.text_data = None
+        self.transformer = None
+        
+        # autoencoder model weight and data
+        self.autoencoder = None 
         self.autoencoder_data = None
-        self.resampling_data = None
-        # self.resample_data_size = resample_data_size # as by Anthropic
 
         # autoencoder dataset might be stored in more than one files
         # in this case use
@@ -37,7 +35,6 @@ class ResourceLoader:
         self.num_examples_total = 0 # TODO: fix this
         self.offset = 0 # sometimes, when we load a new file, we will use `a` examples from one (previous) partition
         # and `b` examples from another (the new) partition. offset is the number `b`.
-        self.batch_size = batch_size 
         
     def load_text_data(self):
         parent_dir = os.path.dirname(os.path.abspath('.'))
@@ -79,14 +76,14 @@ class ResourceLoader:
         Y = torch.stack([torch.from_numpy((self.text_data[i+1:i+1+block_size]).astype(np.int64)) for i in ix])
         return X.to(device=self.device), Y.to(device=self.device)
     
-    def get_autoencoder_data_batch(self, step):
+    def get_autoencoder_data_batch(self, step, batch_size=8192):
         # A custom data loader specific for our needs.  
         # It assumes that data is stored in multiple files in the 'sae_data' folder. # TODO: folder name might be changed later
         # It selects a batch from 'current_partition' sequentially. When 'current_partition' reaches its end, it loads the next partition. 
         # Input: step: current training step
         # Returns: batch: batch of data
-        batch_start = step * self.batch_size - self.curr_partition_id * self.num_examples_per_partition - self.offset # index of the start of the batch in the current partition
-        batch_end = (step + 1) * self.batch_size - self.curr_partition_id * self.num_examples_per_partition - self.offset # index of the end of the batch in the current partition
+        batch_start = step * batch_size - self.curr_partition_id * self.num_examples_per_partition - self.offset # index of the start of the batch in the current partition
+        batch_end = (step + 1) * batch_size - self.curr_partition_id * self.num_examples_per_partition - self.offset # index of the end of the batch in the current partition
         # check if the end of the batch is beyond the current partition
         if batch_end > self.num_examples_per_partition and self.curr_partition_id < self.n_partitions - 1:
             # handle transition to next part
@@ -95,12 +92,12 @@ class ResourceLoader:
             self.curr_partition_id += 1
             self.autoencoder_data = torch.load(f'{self.autoencoder_data_dir}/{self.curr_partition_id}.pt')
             print(f'partition = {self.curr_partition_id} of training data successfully loaded!')
-            batch = torch.cat([batch, self.autoencoder_data[:self.batch_size - remaining]]).to(torch.float32)
-            self.offset = self.batch_size - remaining
+            batch = torch.cat([batch, self.autoencoder_data[:batch_size - remaining]]).to(torch.float32)
+            self.offset = batch_size - remaining
         else:
             # normal batch processing
             batch = self.autoencoder_data[batch_start:batch_end].to(torch.float32)
-        assert len(batch) == self.batch_size, f"length of batch = {len(batch)} at step = {step} and partition number = {self.curr_partition_id} is not correct"
+        assert len(batch) == batch_size, f"length of batch = {len(batch)} at step = {step} and partition number = {self.curr_partition_id} is not correct"
         return batch.to(self.device)
 
     def select_resampling_data(self, size=819200):
@@ -118,5 +115,4 @@ class ResourceLoader:
             end_index = (partition_id + 1) * num_samples_per_partition
             resampling_data[start_index:end_index] = partition_data[sample_indices]
 
-        self.resampling_data = resampling_data
         return resampling_data

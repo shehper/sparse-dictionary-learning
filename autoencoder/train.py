@@ -46,7 +46,6 @@ torch.manual_seed(seed)
 resourceloader = ResourceLoader(
                             dataset=dataset, 
                             gpt_dir=gpt_dir,
-                            batch_size=batch_size,
                             device=device,
                             )
 
@@ -75,7 +74,7 @@ num_steps = resourceloader.num_examples_total  // batch_size
 
 for step in range(num_steps):
  
-    batch = resourceloader.get_autoencoder_data_batch(step)
+    batch = resourceloader.get_autoencoder_data_batch(step, batch_size=batch_size)
     optimizer.zero_grad(set_to_none=True) 
     autoencoder_output = autoencoder(batch) # f has shape (batch_size, n_features) 
     autoencoder_output['loss'].backward()
