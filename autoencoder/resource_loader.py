@@ -87,7 +87,7 @@ class ResourceLoader:
         ix = torch.randint(len(self.text_data) - self.block_size, (num_contexts,))
         X = torch.stack([torch.from_numpy((self.text_data[i:i+self.block_size]).astype(np.int64)) for i in ix])
         Y = torch.stack([torch.from_numpy((self.text_data[i+1:i+1+self.block_size]).astype(np.int64)) for i in ix])
-        return X, Y
+        return X.to(device=self.device), Y.to(device=self.device)
     
 
     def get_autoencoder_data_batch(self, step):
@@ -112,7 +112,7 @@ class ResourceLoader:
             # normal batch processing
             batch = self.autoencoder_data[batch_start:batch_end].to(torch.float32)
         assert len(batch) == self.batch_size, f"length of batch = {len(batch)} at step = {step} and partition number = {self.curr_partition_id} is not correct"
-        return batch
+        return batch.to(self.device)
 
     # def select_resampling_data(self):
     #     resample_data = torch.zeros(self.resample_data_size, dtype=torch.float32)
