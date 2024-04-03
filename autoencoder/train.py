@@ -6,15 +6,11 @@ python train.py --dataset=shakespeare_char --gpt_dir=out_sc_1_2_32 --eval_contex
 """
 import os
 import torch
-import torch.nn as nn 
-import torch.nn.functional as F
 import numpy as np
 import time
-import matplotlib.pyplot as plt
-from PIL import Image
-import io
 from autoencoder import AutoEncoder
 from resource_loader import ResourceLoader
+from utils.plotting_utils import make_histogram_image
 
 ## hyperparameters
 device = 'cuda'
@@ -36,18 +32,6 @@ out_dir = 'out' # directory containing trained autoencoder model weights
 resampling_interval = 25000 # number of training steps after which neuron resampling will be performed
 num_resamples = 4 # number of times resampling is to be performed; it is done 4 times in Anthropic's paper
 
-def get_histogram_image(data, bins='auto'):
-    """plots a histogram for data and converts it to a PIL image so that it can be logged with wandb"""
-    _, ax = plt.subplots()
-    ax.hist(data, bins=bins)
-    ax.set_title('histogram')
-
-    buf = io.BytesIO() # save the plot to a buffer
-    plt.savefig(buf, format='png')
-    buf.seek(0)
-    plt.close()
-    return Image.open(buf) # convert buffer to a PIL Image and return
-
 # -----------------------------------------------------------------------------
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
 exec(open('configurator.py').read()) # overrides from command line or config file
@@ -55,7 +39,6 @@ config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
 
 # variables that depend on input parameters
-config['device_type'] = device_type = 'cuda' if 'cuda' in device else 'cpu'
 config['num_eval_batches'] = num_eval_batches = eval_contexts // eval_batch_size
     
 torch.manual_seed(seed)
@@ -66,18 +49,12 @@ resourceloader = ResourceLoader(
                             device=device,
                             )
 
-# load tokenized text dataset, i.e. openwebtext, shakespeare_char, etc
+# load tokenized text dataset, transformer weights, and autoencoder data
 text_data = resourceloader.load_text_data() 
-
-## load GPT model weights; we need it to compute reconstruction nll and nll score
 gpt = resourceloader.load_transformer_model()
-
-## LOAD THE FIRST FILE OF TRAINING DATA FOR AUTOENCODER 
-# autoencoder training data may have been saved in multiple files through prepare.py
 autoencoder_data = resourceloader.load_autoencoder_data()
 
-## load data for neuron resampling
-# this data is used during neuron resampling procedure
+# sample `num_resamples * resampling_data_size` examples from autoencoder data for neuron resampling
 resampling_data = resourceloader.load_resampling_data()
 
 autoencoder = AutoEncoder(n_inputs = 4 * resourceloader.transformer.config.n_embd, 
@@ -94,18 +71,13 @@ if wandb_log:
 if save_checkpoint:
     os.makedirs(os.path.join(out_dir, run_name), exist_ok=True)
 
-## TRAINING LOOP
+############## TRAINING LOOP ###############
 start_time = time.time()
 num_steps = resourceloader.num_examples_total  // batch_size
 
 for step in range(num_steps):
  
-    batch = resourceloader.get_autoencoder_data_batch(step)    
-    if device_type == 'cuda':
-        batch = batch.pin_memory().to(device, non_blocking=True)
-    else:
-        batch = batch.to(device)
-
+    batch = resourceloader.get_autoencoder_data_batch(step)
     optimizer.zero_grad(set_to_none=True) 
     autoencoder_output = autoencoder(batch) # f has shape (batch_size, n_features) 
     autoencoder_output['loss'].backward()
@@ -114,7 +86,7 @@ for step in range(num_steps):
     autoencoder.remove_parallel_component_of_decoder_grad()
     optimizer.step()
 
-    # periodically update the norm of dictionary vectors to make sure they don't deviate too far from 1.
+    # periodically update the norm of dictionary vectors to ensure they stay close to 1.
     if step % 1000 == 0: 
         autoencoder.normalize_decoder_columns()
 
@@ -125,12 +97,12 @@ for step in range(num_steps):
         print(f'initiating investigation of dead neurons at step = {step}')
         autoencoder.initiate_dead_neurons()
 
-    # check if should look for dead neurons at this step
+    # check if we should look for dead neurons at this step
     # This is done between an odd and an even multiple of resampling_interval // 2.
     if autoencoder.is_within_neuron_investigation_phase(step, resampling_interval, num_resamples):
         autoencoder.update_dead_neurons(autoencoder_output['latents']) 
     
-    # if step is a multiple of resampling interval, perform neuron resampling
+    # perform neuron resampling if step is a multiple of resampling interval
     if (step+1) % resampling_interval == 0 and step < num_resamples * resampling_interval:
         print(f'{len(autoencoder.dead_neurons)} neurons to be resampled at step = {step}')
         autoencoder.resample_dead_neurons(data=resampling_data, optimizer=optimizer, batch_size=batch_size)
@@ -139,7 +111,6 @@ for step in range(num_steps):
     if (step % eval_interval == 0) or step == num_steps - 1:
         autoencoder.eval() 
         
-        # a dictionary
         log_dict = {'losses/reconstructed_nll': 0, # log-likelihood loss using reconstructed MLP activations
                     'losses/l0_norm': 0, # L0-norm; average number of non-zero components of a feature activation vector
                     'losses/reconstruction_loss': 0, # |xhat - x|^2 <-- L2-norm between MLP activations & their reconstruction
@@ -148,16 +119,12 @@ for step in range(num_steps):
                     'losses/nll_score': 0, # ratio of (nll_loss - ablated_loss) to (nll_loss - reconstructed_nll)
                     }
         
-        # initiate a tensor, containing the number of tokens on which each feature activates
+        # initiate a tensor containing the number of tokens on which each feature activates
         feat_acts_count = torch.zeros(n_features, dtype=torch.float32)
 
         # get batches of text data and evaluate the autoencoder on MLP activations
         for iter in range(num_eval_batches):
             x, y = resourceloader.get_text_batch(num_contexts=eval_batch_size)
-            if device_type == 'cuda':
-                x, y = x.pin_memory().to(device, non_blocking=True), y.pin_memory().to(device, non_blocking=True) 
-            else:
-                x, y = x.to(device), y.to(device)
 
             _, nll_loss = gpt(x, y)
             mlp_acts = gpt.mlp_activation_hooks[0]
@@ -182,22 +149,20 @@ for step in range(num_steps):
 
         # compute feature densities and plot feature density histogram
         log_feat_acts_density = np.log10(feat_acts_count[feat_acts_count != 0]/(eval_contexts * gpt.config.block_size)) # (n_features,)
-        feat_density_historgram = get_histogram_image(log_feat_acts_density)
+        feat_density_historgram = make_histogram_image(log_feat_acts_density)
 
-        # take mean of all loss values by dividing by the number of evaluation batches
+        # take mean of all loss values by dividing by the number of evaluation batches; also log more metrics
         log_dict = {key: val/num_eval_batches for key, val in log_dict.items()}
-        
-        # log more metrics
         log_dict.update(
-                {'debug/mean_dictionary_vector_length': torch.linalg.vector_norm(autoencoder.decoder.weight, dim=0).mean(),
+                {'training_step': step, 
+                'training_examples': step * batch_size,
+                'debug/mean_dictionary_vector_length': torch.linalg.vector_norm(autoencoder.decoder.weight, dim=0).mean(),
                 'feature_density/min_log_feat_density': log_feat_acts_density.min().item() if len(log_feat_acts_density) > 0 else -100,
                 'feature_density/num_neurons_with_feature_density_above_1e-3': (log_feat_acts_density > -3).sum(),
                 'feature_density/num_neurons_with_feature_density_below_1e-3': (log_feat_acts_density < -3).sum(),
                 'feature_density/num_neurons_with_feature_density_below_1e-4': (log_feat_acts_density < -4).sum(), 
                 'feature_density/num_neurons_with_feature_density_below_1e-5': (log_feat_acts_density < -5).sum(),
                 'feature_density/num_alive_neurons': len(log_feat_acts_density),
-                'training_step': step, 
-                'training_examples': step * batch_size
                 })
         if wandb_log:
             log_dict.update({'feature_density/feature_density_histograms': wandb.Image(feat_density_historgram)})    
