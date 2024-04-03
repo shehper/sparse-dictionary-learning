@@ -72,10 +72,6 @@ class ResourceLoader:
             self.num_examples_per_partition = self.autoencoder_data.shape[0]
             self.num_examples_total = self.num_examples_per_partition * self.n_partitions
         return self.autoencoder_data
-    
-    def load_resampling_data(self):
-        self.resampling_data = torch.load(f'{self.autoencoder_data_dir}/resampling_data/data.pt')# TODO: make sure this name is changed to sae_data/resampling_data.pt
-        return self.resampling_data
 
     def get_text_batch(self, num_contexts):
         ix = torch.randint(len(self.text_data) - self.block_size, (num_contexts,))
@@ -83,7 +79,6 @@ class ResourceLoader:
         Y = torch.stack([torch.from_numpy((self.text_data[i+1:i+1+self.block_size]).astype(np.int64)) for i in ix])
         return X.to(device=self.device), Y.to(device=self.device)
     
-
     def get_autoencoder_data_batch(self, step):
         # A custom data loader specific for our needs.  
         # It assumes that data is stored in multiple files in the 'sae_data' folder. # TODO: folder name might be changed later
@@ -112,7 +107,6 @@ class ResourceLoader:
         """
         Selects a subset of data for resampling neurons.
         """
-        torch.manual_seed(0)
         num_samples_per_partition = size // self.n_partitions
         resampling_data = torch.zeros(size, self.n_ffwd)
         
