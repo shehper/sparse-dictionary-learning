@@ -31,6 +31,7 @@ out_dir = 'out' # directory containing trained autoencoder model weights
 # and to be consistent with top_activations.py
 resampling_interval = 25000 # number of training steps after which neuron resampling will be performed
 num_resamples = 4 # number of times resampling is to be performed; it is done 4 times in Anthropic's paper
+resampling_data_size = 819200
 
 # -----------------------------------------------------------------------------
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
@@ -53,9 +54,6 @@ resourceloader = ResourceLoader(
 text_data = resourceloader.load_text_data() 
 gpt = resourceloader.load_transformer_model()
 autoencoder_data = resourceloader.load_autoencoder_data()
-
-# sample `num_resamples * resampling_data_size` examples from autoencoder data for neuron resampling
-resampling_data = resourceloader.load_resampling_data()
 
 autoencoder = AutoEncoder(n_inputs = 4 * resourceloader.transformer.config.n_embd, 
                             n_latents = n_features, 
@@ -105,6 +103,7 @@ for step in range(num_steps):
     # perform neuron resampling if step is a multiple of resampling interval
     if (step+1) % resampling_interval == 0 and step < num_resamples * resampling_interval:
         print(f'{len(autoencoder.dead_neurons)} neurons to be resampled at step = {step}')
+        resampling_data = resourceloader.select_resampling_data(size=resampling_data_size)
         autoencoder.resample_dead_neurons(data=resampling_data, optimizer=optimizer, batch_size=batch_size)
     
     ### ------------ log info ----------- ######
