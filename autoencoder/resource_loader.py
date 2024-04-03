@@ -16,7 +16,6 @@ class ResourceLoader:
     def __init__(self, dataset, gpt_dir, batch_size=8192, device='cpu'):
         # directories, datasets, etc
         self.dataset = dataset # openwebtext, shakespeare_char, etc
-        self.curr_dir = os.path.abspath('.') # after converting code to a package, this might not be needed
         self.gpt_dir = gpt_dir # subdirectory (of transformer) contraining transformer weights
         self.device = device # for models' weights; (large) data is mostly stored in CPU RAM
 
@@ -28,7 +27,6 @@ class ResourceLoader:
         self.text_data = None
         self.autoencoder_data = None
         self.resampling_data = None
-        self.eval_data = None # a piece of 
         # self.resample_data_size = resample_data_size # as by Anthropic
 
         # autoencoder dataset might be stored in more than one files
@@ -36,39 +34,35 @@ class ResourceLoader:
         self.n_partitions = 0
         self.curr_partition_id = 0
         self.num_examples_per_partition = 0 # assuming all files have the same number of examples
-        self.num_examples_total = 0
+        self.num_examples_total = 0 # TODO: fix this
         self.offset = 0 # sometimes, when we load a new file, we will use `a` examples from one (previous) partition
         # and `b` examples from another (the new) partition. offset is the number `b`.
         self.batch_size = batch_size 
         
     def load_text_data(self):
-        ## load tokenized text data
-        self.text_data_dir = os.path.join(os.path.dirname(self.curr_dir), 'transformer', 'data', self.dataset)
-        self.text_data = np.memmap(os.path.join(self.text_data_dir, 'train.bin'), dtype=np.uint16, mode='r')
+        parent_dir = os.path.dirname(os.path.abspath('.'))
+        text_data_path = os.path.join(parent_dir, 'transformer', 'data', self.dataset, 'train.bin')
+        self.text_data = np.memmap(text_data_path, dtype=np.uint16, mode='r')
         return self.text_data
 
     def load_transformer_model(self):
         ## load GPT model weights --- we need it to compute reconstruction nll and nll score
-        ckpt_path = os.path.join(os.path.dirname(self.curr_dir), 'transformer', self.gpt_dir, 'ckpt.pt')
+        parent_dir = os.path.dirname(os.path.abspath('.'))
+        ckpt_path = os.path.join(parent_dir, 'transformer', self.gpt_dir, 'ckpt.pt')
         checkpoint = torch.load(ckpt_path, map_location=self.device)
         gptconf = GPTConfig(**checkpoint['model_args'])
-        gpt = HookedGPT(gptconf)
+        self.transformer = HookedGPT(gptconf)
         state_dict = checkpoint['model']
-        compile = False # TODO: Don't know why I needed to set compile to False before loading the model..
-        # TODO: Also, I dont know why the next 4 lines are needed. state_dict does not seem to have any keys with unwanted_prefix.
         unwanted_prefix = '_orig_mod.' 
-        for k,v in list(state_dict.items()):
+        for k, _ in list(state_dict.items()):
             if k.startswith(unwanted_prefix):
                 state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
-        gpt.load_state_dict(state_dict)
-        gpt.eval()
-        gpt.to(self.device)
-        if compile:
-            gpt = torch.compile(gpt) # requires PyTorch 2.0 (optional)
-        self.transformer = gpt
-        self.block_size = gpt.config.block_size
-        self.n_ffwd = 4 * gpt.config.n_embd
-        return self.transformer 
+        self.transformer.load_state_dict(state_dict)
+        self.transformer.eval()
+        self.transformer.to(self.device)
+        self.n_ffwd = self.transformer.config.n_embd * 4
+        self.block_size = self.transformer.config.block_size
+        return self.transformer
 
     def load_autoencoder_data(self):
         self.autoencoder_data_dir = os.path.join(os.path.abspath('.'), 'data', self.dataset, f"{self.n_ffwd}")
@@ -114,13 +108,21 @@ class ResourceLoader:
         assert len(batch) == self.batch_size, f"length of batch = {len(batch)} at step = {step} and partition number = {self.curr_partition_id} is not correct"
         return batch.to(self.device)
 
-    # def select_resampling_data(self):
-    #     resample_data = torch.zeros(self.resample_data_size, dtype=torch.float32)
-    #     examples_per_partition = self.resample_data_size // self.n_partitions
-    #     for partition_index in range(self.n_partitions):
-    #         partition = torch.load(os.path.join(data_dir, f'{partition_index}.pt')) # current partition
-    #         print(f'working on partition # {partition_index}')
-    #         partition_size = partition.shape[0]
-    #         ix = torch.randint(partition_size, (examples_per_partition,)) # pick examples_per_partition examples from current partition
-    #         out = torch.cat([out, partition[ix]]) # include them in output tensor 
-    #         print(f'Length of data after working on partition # {partition_index} = {out.shape[0]}')
+    def select_resampling_data(self, size=819200):
+        """
+        Selects a subset of data for resampling neurons.
+        """
+        torch.manual_seed(0)
+        num_samples_per_partition = size // self.n_partitions
+        resampling_data = torch.zeros(size, self.n_ffwd)
+        
+        for partition_id in range(self.n_partitions):
+            partition_path = os.path.join(self.autoencoder_data_dir, f'{partition_id}.pt')
+            partition_data = torch.load(partition_path)
+            sample_indices = torch.randint(self.num_examples_per_partition, (num_samples_per_partition,))
+            start_index = partition_id * num_samples_per_partition
+            end_index = (partition_id + 1) * num_samples_per_partition
+            resampling_data[start_index:end_index] = partition_data[sample_indices]
+
+        self.resampling_data = resampling_data
+        return resampling_data
