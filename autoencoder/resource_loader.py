@@ -1,140 +1,142 @@
-"""
-ResourceLoader class takes care of loading model weights, datasets and getting batches of training/eval data from datasets.
-"""
-
-import os 
-import numpy as np 
-import torch 
+import os
+import numpy as np
+import torch
 import sys
 
-## Add path to the transformer subdirectory as it contains GPT class in model.py
+# Extend the Python path to include the transformer subdirectory for GPT class import
 sys.path.insert(0, '../transformer')
 from model import GPTConfig
 from hooked_model import HookedGPT
 
 class ResourceLoader:
-    def __init__(self, dataset, gpt_ckpt_dir, device='cpu', mode="train"):
-        assert mode in ["train", "eval", "prepare"], "mode must be train, eval or prepare"
+    """
+    Manages resources for training, evaluation, or preparation.
+    This includes loading datasets, model weights, and handling batches of data.
+    """
 
-        # directories, datasets, etc
-        self.dataset = dataset # openwebtext, shakespeare_char, etc
-        self.gpt_ckpt_dir = gpt_ckpt_dir # subdirectory (of transformer) contraining transformer weights
-        self.device = device # for models' weights
+    def __init__(self, dataset, gpt_ckpt_dir, device='cpu', mode="train"):
+        assert mode in ["train", "eval", "prepare"], "Invalid mode; must be 'train', 'eval', or 'prepare'."
+
+        self.dataset = dataset  # Name of the dataset (e.g., openwebtext, shakespeare_char)
+        self.gpt_ckpt_dir = gpt_ckpt_dir  # Directory containing GPT model weights
+        self.device = device  # Device on which the models will be loaded
         self.mode = mode
         self.base_dir = os.path.dirname(os.path.abspath('.'))
-        # transformer model weights and dataset 
+
+        # Load the text data and transformer model
         self.text_data = self.load_text_data()
         self.transformer = self.load_transformer_model()
         self.n_ffwd = self.transformer.config.n_embd * 4
-        
+
         if mode in ["train", "eval"]:
-            self.autoencoder_data_dir = os.path.join(os.path.abspath('.'), 'data', self.dataset, f"{self.n_ffwd}")
-            self.autoencoder_data = self.load_first_autoencoder_data_file()
+            self.autoencoder_data_dir = os.path.join(os.path.abspath('.'), 'data', self.dataset, str(self.n_ffwd))
+            self.autoencoder_data = self.load_next_autoencoder_partition(partition_id=0)
             self.autoencoder_data_info = self.init_autoencoder_data_info()
+            
             if mode == "eval":
                 self.autoencoder = self.load_autoencoder_model()
         
     def load_text_data(self):
+        """Loads the text data from the specified dataset."""
         text_data_path = os.path.join(self.base_dir, 'transformer', 'data', self.dataset, 'train.bin')
-        text_data = np.memmap(text_data_path, dtype=np.uint16, mode='r')
-        return text_data
+        return np.memmap(text_data_path, dtype=np.uint16, mode='r')
 
     def load_transformer_model(self):
-        ## load GPT model weights --- we need it to compute reconstruction nll and nll score
+        """Loads the GPT model with pre-trained weights."""
         ckpt_path = os.path.join(self.base_dir, 'transformer', self.gpt_ckpt_dir, 'ckpt.pt')
         checkpoint = torch.load(ckpt_path, map_location=self.device)
-        gptconf = GPTConfig(**checkpoint['model_args'])
-        transformer = HookedGPT(gptconf)
+        gpt_conf = GPTConfig(**checkpoint['model_args'])
+        transformer = HookedGPT(gpt_conf)
         state_dict = checkpoint['model']
+
+        # Remove unwanted prefix from state_dict keys
         unwanted_prefix = '_orig_mod.' 
-        for k, _ in list(state_dict.items()):
-            if k.startswith(unwanted_prefix):
-                state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
+        for key in list(state_dict.keys()):
+            if key.startswith(unwanted_prefix):
+                state_dict[key[len(unwanted_prefix):]] = state_dict.pop(key)
+
         transformer.load_state_dict(state_dict)
         transformer.eval()
         transformer.to(self.device)
         return transformer
-
-    def load_first_autoencoder_data_file(self):
-        file_path = os.path.join(self.autoencoder_data_dir, '0.pt')
-        assert os.path.exists(file_path), f"0.pt not found in {self.autoencoder_data_dir}"
-        autoencoder_data = torch.load(file_path) 
-        return autoencoder_data
     
     def get_number_of_autoencoder_data_files(self):
+        """Returns the number of files in the autoencoder data directory."""
         try:
-            num_partitions = len(next(os.walk(self.autoencoder_data_dir))[2]) # number of files in autoencoder_data_dir
+            num_partitions = len(next(os.walk(self.autoencoder_data_dir))[2])
         except StopIteration:
-            raise ValueError("autoencoder data directory seems empty")
+            raise ValueError("Autoencoder data directory is empty")
         return num_partitions
     
     def init_autoencoder_data_info(self):
-        info = {'num_partitions': self.get_number_of_autoencoder_data_files(),
-                'current_partition_id': 0,
-                'offset': 0,
-                'examples_per_partition': self.autoencoder_data.shape[0],
-                }
-        info['total_examples'] = info['examples_per_partition'] * info['num_partitions']
-        return info
+        """Initializes and returns information about the autoencoder data."""
+        num_partitions = self.get_number_of_autoencoder_data_files()
+        return {
+            'num_partitions': num_partitions,
+            'current_partition_id': 0,
+            'offset': 0,
+            'examples_per_partition': self.autoencoder_data.shape[0],
+            'total_examples': num_partitions * self.autoencoder_data.shape[0]
+        }
 
     def load_autoencoder_model(self):
+        """Placeholder for loading the autoencoder model."""
         pass
 
     def get_text_batch(self, num_contexts):
+        """Generates and returns a batch of text data for training or evaluation."""
         block_size = self.transformer.config.block_size
         ix = torch.randint(len(self.text_data) - block_size, (num_contexts,))
-        X = torch.stack([torch.from_numpy((self.text_data[i:i+block_size]).astype(np.int64)) for i in ix])
-        Y = torch.stack([torch.from_numpy((self.text_data[i+1:i+1+block_size]).astype(np.int64)) for i in ix])
+        X = torch.stack([torch.from_numpy(self.text_data[i:i+block_size].astype(np.int64)) for i in ix])
+        Y = torch.stack([torch.from_numpy(self.text_data[i+1:i+1+block_size].astype(np.int64)) for i in ix])
         return X.to(device=self.device), Y.to(device=self.device)
     
     def get_autoencoder_data_batch(self, step, batch_size=8192):
         """
-        Gets a batch of autoencoder data based on the current step and batch size.
-        Handles the case where the new batch extends beyond the end of the current partition,
-        loading the next partition if necessary.
+        Retrieves a batch of autoencoder data based on the step and batch size.
+        It loads the next data partition if the batch exceeds the current partition.
         """
+        info = self.autoencoder_data_info
+        batch_start = step * batch_size - info["current_partition_id"] * info["examples_per_partition"] - info["offset"]
+        batch_end = batch_start + batch_size
 
-        num_partitions = self.autoencoder_data_info["num_partitions"]
-        current_partition_id = self.autoencoder_data_info["current_partition_id"]
-        offset = self.autoencoder_data_info["offset"]
-        examples_per_partition = self.autoencoder_data_info["examples_per_partition"]
-
-        # indices of the start and end of the batch in the current partition
-        batch_start = step * batch_size - current_partition_id * examples_per_partition - offset 
-        batch_end = (step + 1) * batch_size - current_partition_id * examples_per_partition - offset 
-        
-        # load the next partition if the end of the batch is beyond the current partition
-        if batch_end > examples_per_partition and current_partition_id < num_partitions - 1:
-            remaining = examples_per_partition - batch_start
-            batch = self.autoencoder_data[batch_start:]
-            current_partition_id += 1
-            self.autoencoder_data = torch.load(f'{self.autoencoder_data_dir}/{current_partition_id}.pt')
-            batch = torch.cat([batch, self.autoencoder_data[:batch_size - remaining]])
-            offset = batch_size - remaining
-            self.autoencoder_data_info["offset"] = offset 
-            self.autoencoder_data_info["current_partition_id"] = current_partition_id 
+        if batch_end > info["examples_per_partition"]:
+            # When batch exceeds current partition, load data from the next partition
+            if info["current_partition_id"] < info["num_partitions"] - 1:
+                remaining = info["examples_per_partition"] - batch_start
+                batch = self.autoencoder_data[batch_start:]
+                info["current_partition_id"] += 1
+                self.load_next_autoencoder_partition(info["current_partition_id"])
+                batch = torch.cat([batch, self.autoencoder_data[:batch_size - remaining]])
+                info["offset"] = batch_size - remaining
+            else:
+                raise IndexError("Autoencoder data batch request exceeds available partitions.")
         else:
-            batch = self.autoencoder_data[batch_start:batch_end].to(torch.float32)
+            batch = self.autoencoder_data[batch_start:batch_end]
 
-        assert len(batch) == batch_size, f"length of batch = {len(batch)} at step = {step} is incorrect"
-
+        assert len(batch) == batch_size, f"Batch length mismatch at step {step}"
         return batch.to(self.device)
+
+    def load_next_autoencoder_partition(self, partition_id):
+        """
+        Loads the specified partition of the autoencoder data.
+        """
+        file_path = os.path.join(self.autoencoder_data_dir, f'{partition_id}.pt')
+        self.autoencoder_data = torch.load(file_path)
+        return self.autoencoder_data
 
     def select_resampling_data(self, size=819200):
         """
-        Selects a subset of data for resampling neurons.
+        Selects a subset of autoencoder data for resampling, distributed evenly across partitions.
         """
-        num_partitions = self.autoencoder_data_info["num_partitions"]
-        examples_per_partition = self.autoencoder_data_info["examples_per_partition"]
-        num_samples_per_partition = size // num_partitions
+        info = self.autoencoder_data_info
+        num_samples_per_partition = size // info["num_partitions"]
         resampling_data = torch.zeros(size, self.n_ffwd)
         
-        for partition_id in range(num_partitions):
-            partition_path = os.path.join(self.autoencoder_data_dir, f'{partition_id}.pt')
-            partition_data = torch.load(partition_path)
-            sample_indices = torch.randint(examples_per_partition, (num_samples_per_partition,))
+        for partition_id in range(info["num_partitions"]):
+            partition_data = torch.load(os.path.join(self.autoencoder_data_dir, f'{partition_id}.pt'))
+            sample_indices = torch.randint(info["examples_per_partition"], (num_samples_per_partition,))
             start_index = partition_id * num_samples_per_partition
-            end_index = (partition_id + 1) * num_samples_per_partition
-            resampling_data[start_index:end_index] = partition_data[sample_indices]
+            resampling_data[start_index:start_index + num_samples_per_partition] = partition_data[sample_indices]
 
         return resampling_data
