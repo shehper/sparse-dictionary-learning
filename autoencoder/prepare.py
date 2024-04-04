@@ -1,3 +1,8 @@
+""""
+Prepares training dataset for our autoencoder. 
+Run on Macbook as
+python -u prepare.py --total_contexts=5000 --tokens_per_context=16 --dataset=shakespeare_char --gpt_ckpt_dir=out_sc_1_2_32
+"""
 import os
 import torch
 import time
@@ -48,7 +53,7 @@ def compute_activations():
         gpt_model.clear_mlp_activation_hooks()
 
         # Process and store activations
-        token_locs = torch.randint(block_size, (gpt_batch_size, tokens_per_context))
+        token_locs = torch.stack([torch.randperm(block_size)[:tokens_per_context] for _ in range(gpt_batch_size)])
         data = torch.gather(activations, 1, token_locs.unsqueeze(2).expand(-1, -1, activations.size(2))).view(-1, n_ffwd)
         data_storage[shuffled_indices[batch * gpt_batch_size * tokens_per_context: (batch + 1) * gpt_batch_size * tokens_per_context]] = data
 
