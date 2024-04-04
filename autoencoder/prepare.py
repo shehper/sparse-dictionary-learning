@@ -1,7 +1,7 @@
 """"
 Prepares training dataset for our autoencoder. 
 Run on Macbook as
-python -u prepare.py --total_contexts=5000 --tokens_per_context=16 --dataset=shakespeare_char --gpt_ckpt_dir=out_sc_1_2_32
+python -u prepare.py --total_contexts=5000 --num_sampled_tokens=16 --dataset=shakespeare_char --gpt_ckpt_dir=out_sc_1_2_32
 """
 import os
 import torch
@@ -13,7 +13,7 @@ from resource_loader import ResourceLoader
 seed = 0
 device = 'cpu'
 total_contexts = int(2e6)  # Number of context windows
-tokens_per_context = 200  # Tokens per context window
+num_sampled_tokens = 200  # Tokens per context window
 dataset = 'openwebtext'
 gpt_ckpt_dir = 'out'  # Model checkpoint directory
 n_files = 20  # Number of output files
@@ -35,8 +35,8 @@ block_size = gpt_model.config.block_size
 n_ffwd = 4 * gpt_model.config.n_embd 
 
 # Prepare storage for activations
-data_storage = torch.zeros(total_contexts * tokens_per_context, n_ffwd, dtype=torch.float32)
-shuffled_indices = torch.randperm(total_contexts * tokens_per_context)
+data_storage = torch.zeros(total_contexts * num_sampled_tokens, n_ffwd, dtype=torch.float32)
+shuffled_indices = torch.randperm(total_contexts * num_sampled_tokens)
 
 def compute_activations():
     start_time = time.time()
@@ -53,9 +53,9 @@ def compute_activations():
         gpt_model.clear_mlp_activation_hooks()
 
         # Process and store activations
-        token_locs = torch.stack([torch.randperm(block_size)[:tokens_per_context] for _ in range(gpt_batch_size)])
+        token_locs = torch.stack([torch.randperm(block_size)[:num_sampled_tokens] for _ in range(gpt_batch_size)])
         data = torch.gather(activations, 1, token_locs.unsqueeze(2).expand(-1, -1, activations.size(2))).view(-1, n_ffwd)
-        data_storage[shuffled_indices[batch * gpt_batch_size * tokens_per_context: (batch + 1) * gpt_batch_size * tokens_per_context]] = data
+        data_storage[shuffled_indices[batch * gpt_batch_size * num_sampled_tokens: (batch + 1) * gpt_batch_size * num_sampled_tokens]] = data
 
         print(f"Batch {batch}/{n_batches} processed in {(time.time() - start_time) / (batch + 1):.2f} seconds; "
               f"Memory: {psutil.virtual_memory().available / (1024 ** 3):.2f} GB available, {psutil.virtual_memory().percent}% used.")
@@ -63,7 +63,7 @@ def compute_activations():
 def save_activations():
     autoencoder_data_dir = os.path.join(os.path.abspath('.'), 'data', dataset, str(n_ffwd))
     os.makedirs(autoencoder_data_dir, exist_ok=True)
-    examples_per_file = total_contexts * tokens_per_context // n_files
+    examples_per_file = total_contexts * num_sampled_tokens // n_files
 
     for i in range(n_files):
         file_path = f'{autoencoder_data_dir}/{seed * n_files + i}.pt'

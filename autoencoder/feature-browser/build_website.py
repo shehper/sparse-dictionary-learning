@@ -1,7 +1,7 @@
 """
 Make a feature browser for a trained autoencoder model.
 Run on a Macbook as
-python make_feature_browser.py --device=cpu --dataset=shakespeare_char --gpt_ckpt_dir=out-shakespeare-char --autoencoder_subdir=1704914564.90-autoencoder-shakespeare_char
+python build_website.py --device=cpu --dataset=shakespeare_char --gpt_ckpt_dir=out_sc_1_2_32 --autoencoder_subdir=1712254759.95
 """
 
 import torch
@@ -12,7 +12,7 @@ import sys
 import gc
 import psutil
 from main_page import create_main_html_page
-from html_functions import write_alive_feature_page, write_dead_feature_page, write_ultralow_density_feature_page
+from subpages import write_alive_feature_page, write_dead_feature_page, write_ultralow_density_feature_page
 
 ## Add path to the transformer subdirectory as it contains GPT class in model.py
 sys.path.insert(0, '../../transformer')
@@ -32,22 +32,45 @@ autoencoder_dir = 'out' # directory containing weights of various trained autoen
 autoencoder_subdir = 0.0 # subdirectory containing the specific model to consider # TODO: might have to think about it. It shouldn't be a float.
 eval_batch_size = 156 # batch size for computing reconstruction nll # TODO: this should have a different name. # B
 num_contexts = 10000 # 10 million in anthropic paper; but we will choose the entire dataset as our dataset is small # N
-eval_tokens = 10 # same as Anthropic's paper; number of tokens in each context on which feature activations will be computed # M
-num_tokens_either_side = 4 # number of tokens to print/save on either side of the token with feature activation. 
-# let 2 * num_tokens_either_side + 1 be denoted by W.
+num_sampled_tokens = 10 # same as Anthropic's paper; number of tokens in each context on which feature activations will be computed # M
+window_radius = 4 # number of tokens to print/save on either side of the token with feature activation. 
+# let 2 * window_radius + 1 be denoted by W.
 n_features_per_phase = 20 # due to memory constraints, it's useful to process features in phases. 
 k = 10 # number of top activations for each feature; 20 in Anthropic's visualization
 n_intervals = 12 # number of intervals to divide activations in; = 12 in Anthropic's work
 n_exs_per_interval = 5 # number of examples to sample from each interval of activations 
 modes_density_cutoff = 1e-3 # TODO: remove this; it is not being used anymor
 
-def sample_tokens(*args, eval_tokens, num_tokens_either_side, fn_seed=0):
-    # given tensors each of shape (B, T, ...), return tensors on randomly selected tokens
-    # and windows around them. shape of output: (B * U, W, ...)
-    # Here, U = eval_tokens --- the number of tokens in each context on which to evaluate the autoencoder
-    # V = num_tokens_either_side --- the number of tokens on either side of the sampled token to represent
+def select_context_windows(*args, num_sampled_tokens, window_radius, fn_seed=0):
+    """
+    Select windows of tokens around randomly sampled tokens from input tensors.
 
-    U, V = eval_tokens, num_tokens_either_side
+    Given tensors each of shape (B, T, ...), this function returns tensors containing
+    windows around randomly selected tokens. The shape of the output is (B * U, W, ...),
+    where U is the number of tokens in each context to evaluate, and W is the window size
+    (including the token itself and tokens on either side).
+
+    Parameters:
+    - args: Variable number of tensor arguments, each of shape (B, T, ...)
+    - num_sampled_tokens (int): The number of tokens in each context on which to evaluate
+    - window_radius (int): The number of tokens on either side of the sampled token
+    - fn_seed (int, optional): Seed for random number generator, default is 0
+
+    Returns:
+    - A list of tensors, each of shape (B * U, W, ...), where U is `num_sampled_tokens` and W is
+      the window size calculated as 2 * `window_radius` + 1.
+
+    Raises:
+    - AssertionError: If no tensors are provided, or if the tensors do not have the required shape.
+
+    Example usage:
+    ```
+    tensor1 = torch.randn(10, 20, 30)  # Example tensor
+    windows = select_context_windows(tensor1, num_sampled_tokens=5, window_radius=2)
+    ```
+    """
+
+    U, V = num_sampled_tokens, window_radius
     
     assert args and isinstance(args[0], torch.Tensor), "must provide at least one torch tensor as input"
     assert args[0].ndim >=2, "input tensor must at least have 2 dimensions"
@@ -117,8 +140,8 @@ if __name__ == '__main__':
     X_NT = torch.stack([torch.from_numpy((text_data[i: i+T]).astype(np.int32)) for i in ix])
 
     ## glossary of variables
-    U = eval_tokens
-    V = num_tokens_either_side
+    U = num_sampled_tokens
+    V = window_radius
     M = N * U
     W = 2 * V + 1 # window length
     I = n_intervals
@@ -159,7 +182,7 @@ if __name__ == '__main__':
                                                                    start_idx=phase*H, 
                                                                    end_idx=(phase+1)*H)
             # sample tokens from the context, and save feature activations and tokens for these tokens in data_MW.
-            X_PW, feature_acts_PWH = sample_tokens(X_BT, feature_acts_BTH, eval_tokens=U, num_tokens_either_side=V, fn_seed=seed+iter) # P = B * U
+            X_PW, feature_acts_PWH = select_context_windows(X_BT, feature_acts_BTH, num_sampled_tokens=U, window_radius=V, fn_seed=seed+iter) # P = B * U
             data_MW["tokens"][iter * B * U: (iter + 1) * B * U] = X_PW 
             data_MW["feature_acts_H"][iter * B * U: (iter + 1) * B * U] = feature_acts_PWH
 
@@ -167,7 +190,7 @@ if __name__ == '__main__':
 
         ## Get top k feature activations
         print(f'computing top k feature activations in phase # {phase + 1}/{n_phases}')
-        _, topk_indices_kH = torch.topk(data_MW["feature_acts_H"][:, num_tokens_either_side, :], k=k, dim=0)
+        _, topk_indices_kH = torch.topk(data_MW["feature_acts_H"][:, window_radius, :], k=k, dim=0)
         # evaluate text windows and feature activations to topk_indices_kH to get texts and activations for top activations
         top_acts_data_kWH = TensorDict({
             "tokens": data_MW["tokens"][topk_indices_kH].transpose(dim0=1, dim1=2),
@@ -184,7 +207,7 @@ if __name__ == '__main__':
         # TODO: make sure there are no bugs in switch back and forth between feature id and h.
         # TODO: It seems that up until the computation of num_non_zero_acts,
         # we can use vectorization. It would look something like this.
-        # mid_token_feature_acts_MH = data_MW["feature_acts_H"][:, num_tokens_either_side, :]
+        # mid_token_feature_acts_MH = data_MW["feature_acts_H"][:, window_radius, :]
         # num_nonzero_acts_MH = torch.count_nonzero(mid_token_feature_acts_MH, dim=1)
         # the sorting and sampling operations that follow seem harder to vectorize.
         # I wonder if there will be enough computational speed-up from vectorizing
@@ -194,7 +217,7 @@ if __name__ == '__main__':
             feature_id = phase * n_features_per_phase + h
             ## check whether feature is alive, dead or ultralow density based on activations on sampled tokens
             curr_feature_acts_MW = data_MW["feature_acts_H"][:, :, h]
-            mid_token_feature_acts_M = curr_feature_acts_MW[:, num_tokens_either_side]
+            mid_token_feature_acts_M = curr_feature_acts_MW[:, window_radius]
             num_nonzero_acts = torch.count_nonzero(mid_token_feature_acts_M)
 
             # if neuron is dead, write a dead neuron page
