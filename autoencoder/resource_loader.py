@@ -2,6 +2,8 @@ import os
 import numpy as np
 import torch
 import sys
+import pickle
+import tiktoken
 
 # Extend the Python path to include the transformer subdirectory for GPT class import
 sys.path.insert(0, '../transformer')
@@ -14,14 +16,17 @@ class ResourceLoader:
     This includes loading datasets, model weights, and handling batches of data.
     """
 
-    def __init__(self, dataset, gpt_ckpt_dir, device='cpu', mode="train"):
+    def __init__(self, dataset, gpt_ckpt_dir, device='cpu', mode="train", sae_ckpt_dir=""):
         assert mode in ["train", "eval", "prepare"], "Invalid mode; must be 'train', 'eval', or 'prepare'."
 
         self.dataset = dataset  # Name of the dataset (e.g., openwebtext, shakespeare_char)
         self.gpt_ckpt_dir = gpt_ckpt_dir  # Directory containing GPT model weights
         self.device = device  # Device on which the models will be loaded
         self.mode = mode
-        self.base_dir = os.path.dirname(os.path.abspath('.'))
+        
+        # Set the path to the repository as the base directory
+        current_file_dir = os.path.dirname(os.path.abspath(__file__))
+        self.base_dir = os.path.dirname(current_file_dir)
 
         # Load the text data and transformer model
         self.text_data = self.load_text_data()
@@ -29,11 +34,13 @@ class ResourceLoader:
         self.n_ffwd = self.transformer.config.n_embd * 4
 
         if mode in ["train", "eval"]:
-            self.autoencoder_data_dir = os.path.join(os.path.abspath('.'), 'data', self.dataset, str(self.n_ffwd))
+            self.autoencoder_data_dir = os.path.join(self.base_dir, 'autoencoder', 'data', self.dataset, str(self.n_ffwd))
             self.autoencoder_data = self.load_next_autoencoder_partition(partition_id=0)
             self.autoencoder_data_info = self.init_autoencoder_data_info()
             
             if mode == "eval":
+                assert sae_ckpt_dir, "A path to autoencoder checkpoint must be given"
+                self.sae_ckpt_dir = sae_ckpt_dir
                 self.autoencoder = self.load_autoencoder_model()
         
     def load_text_data(self):
@@ -80,8 +87,16 @@ class ResourceLoader:
         }
 
     def load_autoencoder_model(self):
-        """Placeholder for loading the autoencoder model."""
-        pass
+        """Loads the AutoEncoder model with pre-trained weights"""
+        autoencoder_path = os.path.join(self.base_dir, "autoencoder", "out", self.dataset, self.sae_ckpt_dir)
+        autoencoder_ckpt = torch.load(os.path.join(autoencoder_path, 'ckpt.pt'), map_location=self.device)
+        state_dict = autoencoder_ckpt['autoencoder']
+        n_features, n_ffwd = state_dict['encoder.weight'].shape # H, F
+        l1_coeff = autoencoder_ckpt['config']['l1_coeff']
+        from autoencoder import AutoEncoder
+        autoencoder = AutoEncoder(n_ffwd, n_features, lam=l1_coeff).to(self.device)
+        autoencoder.load_state_dict(state_dict)
+        return autoencoder
 
     def get_text_batch(self, num_contexts):
         """Generates and returns a batch of text data for training or evaluation."""
@@ -140,3 +155,23 @@ class ResourceLoader:
             resampling_data[start_index:start_index + num_samples_per_partition] = partition_data[sample_indices]
 
         return resampling_data
+
+    def load_tokenizer(self):
+        load_meta = False
+        meta_path = os.path.join(self.base_dir, 'transformer', 'data', self.dataset, 'meta.pkl')
+        load_meta = os.path.exists(meta_path)
+        if load_meta:
+            print(f"Loading meta from {meta_path}...")
+            with open(meta_path, 'rb') as f:
+                meta = pickle.load(f)
+            # TODO want to make this more general to arbitrary encoder/decoder schemes
+            stoi, itos = meta['stoi'], meta['itos']
+            encode = lambda s: [stoi[c] for c in s]
+            decode = lambda l: ''.join([itos[i] for i in l])
+        else:
+            # ok let's assume gpt-2 encodings by default
+            print("No meta.pkl found, assuming GPT-2 encodings...")
+            enc = tiktoken.get_encoding("gpt2")
+            encode = lambda s: enc.encode(s, allowed_special={"<|endoftext|>"})
+            decode = lambda l: enc.decode(l)
+        return encode, decode
