@@ -56,12 +56,13 @@ autoencoder = AutoEncoder(n_inputs = 4 * resourceloader.transformer.config.n_emb
 optimizer = torch.optim.Adam(autoencoder.parameters(), lr=learning_rate) 
 
 ## prepare for logging and saving checkpoints
-run_name = f'{time.time():.2f}-autoencoder-{dataset}'
+run_name = f'{time.time():.2f}'
 if wandb_log:
     import wandb
     wandb.init(project=f'sparse-autoencoder-{dataset}', name=run_name, config=config)
 if save_checkpoint:
-    os.makedirs(os.path.join(out_dir, run_name), exist_ok=True)
+    ckpt_path = os.path.join(out_dir, dataset, run_name)
+    os.makedirs(ckpt_path, exist_ok=True)
 
 ############## TRAINING LOOP ###############
 start_time = time.time()
@@ -173,8 +174,8 @@ for step in range(num_steps):
                 'config': config,
                 'feature_activation_counts': feat_acts_count, # may be used later to identify alive vs dead neurons
                 }
-        print(f"saving checkpoint to {out_dir}/{run_name} at training step = {step}")
-        torch.save(checkpoint, os.path.join(out_dir, run_name, 'ckpt.pt'))
+        print(f"saving checkpoint to {ckpt_path} at training step = {step}")
+        torch.save(checkpoint, os.path.join(ckpt_path, 'ckpt.pt'))
 
 if wandb_log:
     wandb.finish()
