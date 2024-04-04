@@ -1,7 +1,6 @@
 """
-Load a trained autoencoder model to compute its top activations
-
-Run on a macbook on a Shakespeare dataset as 
+Make a feature browser for a trained autoencoder model.
+Run on a Macbook as
 python make_feature_browser.py --device=cpu --dataset=shakespeare_char --gpt_ckpt_dir=out-shakespeare-char --autoencoder_subdir=1704914564.90-autoencoder-shakespeare_char
 """
 
@@ -9,12 +8,11 @@ import torch
 from tensordict import TensorDict 
 import os
 import numpy as np
-import pickle # needed to load meta.pkl
-import tiktoken # needed to decode contexts to text
 import sys 
 import gc
 import psutil
-from html_functions import *
+from main_page import create_main_html_page
+from html_functions import write_alive_feature_page, write_dead_feature_page, write_ultralow_density_feature_page
 
 ## Add path to the transformer subdirectory as it contains GPT class in model.py
 sys.path.insert(0, '../../transformer')
@@ -23,6 +21,7 @@ from hooked_model import HookedGPT
 
 sys.path.insert(1, '../')
 from resource_loader import ResourceLoader
+from utils.plotting_utils import make_histogram
 
 # hyperparameters 
 device = 'cuda' # change it to cpu
@@ -79,6 +78,8 @@ def sample_tokens(*args, eval_tokens, num_tokens_either_side, fn_seed=0):
 
     return result_tensors
 
+
+
 if __name__ == '__main__':
 
     # -----------------------------------------------------------------------------
@@ -86,21 +87,8 @@ if __name__ == '__main__':
     exec(open('../configurator.py').read()) # overrides from command line or config file
     config = {k: globals()[k] for k in config_keys} # will be useful for logging
     # -----------------------------------------------------------------------------
-
-    # print(type(autoencoder_subdir))
-    # print(config['autoencoder_subdir'])
-    # assert config['autoencoder_subdir']
-    # raise
-
-    assert config['autoencoder_subdir'], "autoencoder_subdir must be provided to load a trained autoencoder model"
-
-
-
-    # variables that depend on input parameters
-    config['device_type'] = device_type = 'cuda' if 'cuda' in device else 'cpu'
         
     torch.manual_seed(seed)
-
     resourceloader = ResourceLoader(
                             dataset=dataset, 
                             gpt_ckpt_dir=gpt_ckpt_dir,
@@ -161,10 +149,7 @@ if __name__ == '__main__':
         for iter in range(n_batches): 
             print(f"Computing feature activations for batch # {iter+1}/{n_batches} in phase # {phase + 1}/{n_phases}")
             # select text input for the batch
-            if device_type == 'cuda':
-                X_BT = X_NT[iter * B: (iter + 1) * B].pin_memory().to(device, non_blocking=True) 
-            else:
-                X_BT = X_NT[iter * B: (iter + 1) * B].to(device)
+            X_BT = X_NT[iter * B: (iter + 1) * B].to(device)
             # compute MLP activations 
             _, _ = gpt(X_BT)
             mlp_acts_BTF = gpt.mlp_activation_hooks[0]
