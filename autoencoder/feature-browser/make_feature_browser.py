@@ -2,7 +2,7 @@
 Load a trained autoencoder model to compute its top activations
 
 Run on a macbook on a Shakespeare dataset as 
-python top_activations.py --device=cpu --dataset=shakespeare_char --gpt_dir=out-shakespeare-char --autoencoder_subdir=1704914564.90-autoencoder-shakespeare_char
+python make_feature_browser.py --device=cpu --dataset=shakespeare_char --gpt_dir=out-shakespeare-char --autoencoder_subdir=1704914564.90-autoencoder-shakespeare_char
 """
 
 import torch
@@ -14,19 +14,22 @@ import tiktoken # needed to decode contexts to text
 import sys 
 import gc
 import psutil
-from autoencoder import AutoEncoder
 from html_functions import *
 
 ## Add path to the transformer subdirectory as it contains GPT class in model.py
-sys.path.insert(0, '../transformer')
+sys.path.insert(0, '../../transformer')
 from model import GPTConfig
 from hooked_model import HookedGPT
+
+sys.path.insert(1, '../')
+from resource_loader import ResourceLoader
+from autoencoder import AutoEncoder
 
 # hyperparameters 
 device = 'cuda' # change it to cpu
 seed = 1442
 dataset = 'openwebtext' 
-gpt_dir = 'out' 
+gpt_ckpt_dir = 'out' 
 autoencoder_dir = 'out' # directory containing weights of various trained autoencoder models
 autoencoder_subdir = '' # subdirectory containing the specific model to consider
 eval_batch_size = 156 # batch size for computing reconstruction nll # TODO: this should have a different name. # B
@@ -81,7 +84,7 @@ if __name__ == '__main__':
 
     # -----------------------------------------------------------------------------
     config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
-    exec(open('configurator.py').read()) # overrides from command line or config file
+    exec(open('../configurator.py').read()) # overrides from command line or config file
     config = {k: globals()[k] for k in config_keys} # will be useful for logging
     # -----------------------------------------------------------------------------
 
@@ -93,21 +96,21 @@ if __name__ == '__main__':
     torch.manual_seed(seed)
 
     # load autoencoder model weights
-    autoencoder_path = os.path.join(autoencoder_dir, autoencoder_subdir)
+    autoencoder_path = os.path.join(os.path.dirname(os.path.abspath('.')), autoencoder_dir, autoencoder_subdir)
     autoencoder_ckpt = torch.load(os.path.join(autoencoder_path, 'ckpt.pt'), map_location=device)
     state_dict = autoencoder_ckpt['autoencoder']
-    n_features, n_ffwd = state_dict['enc.weight'].shape # H, F
+    n_features, n_ffwd = state_dict['encoder.weight'].shape # H, F
     l1_coeff = autoencoder_ckpt['config']['l1_coeff']
     autoencoder = AutoEncoder(n_ffwd, n_features, lam=l1_coeff).to(device)
     autoencoder.load_state_dict(state_dict)
 
     ## load tokenized text data
     current_dir = os.path.abspath('.')
-    data_dir = os.path.join(os.path.dirname(current_dir), 'transformer', 'data', dataset)
+    data_dir = os.path.join(os.path.dirname(os.path.dirname(current_dir)), 'transformer', 'data', dataset)
     text_data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
 
     ## load GPT model --- we need it to compute reconstruction nll and nll score
-    gpt_ckpt_path = os.path.join(os.path.dirname(current_dir), 'transformer', gpt_dir, 'ckpt.pt')
+    gpt_ckpt_path = os.path.join(os.path.dirname(os.path.dirname(current_dir)), 'transformer', gpt_ckpt_dir, 'ckpt.pt')
     gpt_ckpt = torch.load(gpt_ckpt_path, map_location=device)
     gptconf = GPTConfig(**gpt_ckpt['model_args'])
     gpt = HookedGPT(gptconf)
@@ -197,7 +200,9 @@ if __name__ == '__main__':
             mlp_acts_BTF = gpt.mlp_activation_hooks[0]
             gpt.clear_mlp_activation_hooks() 
             # compute feature activations for features in this phase
-            feature_acts_BTH = autoencoder.get_feature_acts(x=mlp_acts_BTF, s=phase*H, e=(phase+1)*H)
+            feature_acts_BTH = autoencoder.get_feature_activations(inputs=mlp_acts_BTF, 
+                                                                   start_idx=phase*H, 
+                                                                   end_idx=(phase+1)*H)
             # sample tokens from the context, and save feature activations and tokens for these tokens in data_MW.
             X_PW, feature_acts_PWH = sample_tokens(X_BT, feature_acts_BTH, eval_tokens=U, num_tokens_either_side=V, fn_seed=seed+iter) # P = B * U
             data_MW["tokens"][iter * B * U: (iter + 1) * B * U] = X_PW 
