@@ -2,7 +2,7 @@
 Train a Sparse AutoEncoder model
 
 Run on a macbook on a Shakespeare dataset as 
-python train.py --dataset=shakespeare_char --gpt_ckpt_dir=out_sc_1_2_32 --eval_contexts=20 --eval_batch_size=16 --batch_size=128 --device=cpu --eval_interval=100 --n_features=1024 --resampling_interval=150 --wandb_log=True
+python train.py --dataset=shakespeare_char --gpt_ckpt_dir=out_sc_1_2_32 --eval_iters=1 --eval_batch_size=16 --batch_size=128 --device=cpu --eval_interval=100 --n_features=1024 --resampling_interval=150 --wandb_log=True
 """
 import os
 import torch
@@ -20,11 +20,11 @@ gpt_ckpt_dir = 'out'
 wandb_log = True
 l1_coeff = 3e-3
 learning_rate = 3e-4
-batch_size = 8192 # 8192 for owt
+batch_size = 8192 # batch size for autoencoder training
 n_features = 4096
-eval_contexts = 10000 # number of windows of texts to evaluate the autoencoder on as OWT dataset is smaller
+eval_batch_size = 16 # batch size (number of GPT contexts) for evaluation
+eval_iters = 200 # number of iterations in the evaluation loop
 eval_interval = 1000 # number of training steps after which the autoencoder is evaluated
-eval_batch_size = 16 # numnber of contexts in each text batch when evaluating the autoencoder model
 save_checkpoint = True # whether to save model, optimizer, etc or not
 save_interval = 10000 # number of training steps after which a checkpoint will be saved
 out_dir = 'out' # directory containing trained autoencoder model weights
@@ -103,6 +103,7 @@ for step in range(num_steps):
     
     ### ------------ log info ----------- ######
     if (step % eval_interval == 0) or step == num_steps - 1:
+        print(f'Entering evaluation mode at step = {step}')
         autoencoder.eval() 
         
         log_dict = {'losses/reconstructed_nll': 0, # log-likelihood loss using reconstructed MLP activations
@@ -117,8 +118,9 @@ for step in range(num_steps):
         feat_acts_count = torch.zeros(n_features, dtype=torch.float32)
 
         # get batches of text data and evaluate the autoencoder on MLP activations
-        num_eval_batches = eval_contexts // eval_batch_size
-        for iter in range(num_eval_batches):
+        for iter in range(eval_iters):
+            if iter % 20 == 0:
+                print(f'Performing evaluation at iteration # ({iter} - {min(iter+19, eval_iters)})/{eval_iters}')
             x, y = resourceloader.get_text_batch(num_contexts=eval_batch_size)
 
             _, nll_loss = gpt(x, y)
@@ -143,11 +145,11 @@ for step in range(num_steps):
             log_dict['losses/nll_score'] += (nll_loss - reconstructed_nll).item()/(nll_loss - ablated_loss).item()
 
         # compute feature densities and plot feature density histogram
-        log_feat_acts_density = np.log10(feat_acts_count[feat_acts_count != 0]/(eval_contexts * gpt.config.block_size)) # (n_features,)
+        log_feat_acts_density = np.log10(feat_acts_count[feat_acts_count != 0]/(eval_iters * eval_batch_size * gpt.config.block_size)) # (n_features,)
         feat_density_historgram = make_histogram_image(log_feat_acts_density)
 
         # take mean of all loss values by dividing by the number of evaluation batches; also log more metrics
-        log_dict = {key: val/num_eval_batches for key, val in log_dict.items()}
+        log_dict = {key: val/eval_iters for key, val in log_dict.items()}
         log_dict.update(
                 {'training_step': step, 
                 'training_examples': step * batch_size,
@@ -164,6 +166,7 @@ for step in range(num_steps):
             wandb.log(log_dict)
 
         autoencoder.train()
+        print(f'Exiting evaluation mode at step = {step}')
             
     ### ------------ save a checkpoint ----------- ######
     if save_checkpoint and step > 0 and (step % save_interval == 0 or step == num_steps - 1):
