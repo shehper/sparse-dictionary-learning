@@ -136,11 +136,11 @@ for step in range(num_steps):
 
             # calculat the AVERAGE number of non-zero entries in each feature vector and log all losses
             log_dict['losses/l0_norm'] += feat_acts.count_nonzero(dim=-1).float().mean().item()
-            log_dict['losses/reconstructed_nll'] += reconstructed_nll
+            log_dict['losses/reconstructed_nll'] += reconstructed_nll.item()
             log_dict['losses/autoencoder_loss'] += autoencoder_output['loss'].item() 
             log_dict['losses/reconstruction_loss'] += autoencoder_output['mse_loss'].item()
             log_dict['losses/l1_norm'] += autoencoder_output['l1_loss'].item()
-            log_dict['losses/nll_score'] += (nll_loss - reconstructed_nll)/(nll_loss - ablated_loss).item()
+            log_dict['losses/nll_score'] += (nll_loss - reconstructed_nll).item()/(nll_loss - ablated_loss).item()
 
         # compute feature densities and plot feature density histogram
         log_feat_acts_density = np.log10(feat_acts_count[feat_acts_count != 0]/(eval_contexts * gpt.config.block_size)) # (n_features,)
