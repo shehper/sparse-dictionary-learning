@@ -2,7 +2,7 @@
 Load a trained autoencoder model to compute its top activations
 
 Run on a macbook on a Shakespeare dataset as 
-python make_feature_browser.py --device=cpu --dataset=shakespeare_char --gpt_dir=out-shakespeare-char --autoencoder_subdir=1704914564.90-autoencoder-shakespeare_char
+python make_feature_browser.py --device=cpu --dataset=shakespeare_char --gpt_ckpt_dir=out-shakespeare-char --autoencoder_subdir=1704914564.90-autoencoder-shakespeare_char
 """
 
 import torch
@@ -23,7 +23,6 @@ from hooked_model import HookedGPT
 
 sys.path.insert(1, '../')
 from resource_loader import ResourceLoader
-from autoencoder import AutoEncoder
 
 # hyperparameters 
 device = 'cuda' # change it to cpu
@@ -31,7 +30,7 @@ seed = 1442
 dataset = 'openwebtext' 
 gpt_ckpt_dir = 'out' 
 autoencoder_dir = 'out' # directory containing weights of various trained autoencoder models
-autoencoder_subdir = '' # subdirectory containing the specific model to consider
+autoencoder_subdir = 0.0 # subdirectory containing the specific model to consider # TODO: might have to think about it. It shouldn't be a float.
 eval_batch_size = 156 # batch size for computing reconstruction nll # TODO: this should have a different name. # B
 num_contexts = 10000 # 10 million in anthropic paper; but we will choose the entire dataset as our dataset is small # N
 eval_tokens = 10 # same as Anthropic's paper; number of tokens in each context on which feature activations will be computed # M
@@ -88,64 +87,35 @@ if __name__ == '__main__':
     config = {k: globals()[k] for k in config_keys} # will be useful for logging
     # -----------------------------------------------------------------------------
 
+    # print(type(autoencoder_subdir))
+    # print(config['autoencoder_subdir'])
+    # assert config['autoencoder_subdir']
+    # raise
+
     assert config['autoencoder_subdir'], "autoencoder_subdir must be provided to load a trained autoencoder model"
+
+
 
     # variables that depend on input parameters
     config['device_type'] = device_type = 'cuda' if 'cuda' in device else 'cpu'
         
     torch.manual_seed(seed)
 
-    # load autoencoder model weights
-    autoencoder_path = os.path.join(os.path.dirname(os.path.abspath('.')), autoencoder_dir, autoencoder_subdir)
-    autoencoder_ckpt = torch.load(os.path.join(autoencoder_path, 'ckpt.pt'), map_location=device)
-    state_dict = autoencoder_ckpt['autoencoder']
-    n_features, n_ffwd = state_dict['encoder.weight'].shape # H, F
-    l1_coeff = autoencoder_ckpt['config']['l1_coeff']
-    autoencoder = AutoEncoder(n_ffwd, n_features, lam=l1_coeff).to(device)
-    autoencoder.load_state_dict(state_dict)
+    resourceloader = ResourceLoader(
+                            dataset=dataset, 
+                            gpt_ckpt_dir=gpt_ckpt_dir,
+                            device=device,
+                            mode="eval",
+                            sae_ckpt_dir=str(autoencoder_subdir),
+                            )
 
-    ## load tokenized text data
-    current_dir = os.path.abspath('.')
-    data_dir = os.path.join(os.path.dirname(os.path.dirname(current_dir)), 'transformer', 'data', dataset)
-    text_data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
-
-    ## load GPT model --- we need it to compute reconstruction nll and nll score
-    gpt_ckpt_path = os.path.join(os.path.dirname(os.path.dirname(current_dir)), 'transformer', gpt_ckpt_dir, 'ckpt.pt')
-    gpt_ckpt = torch.load(gpt_ckpt_path, map_location=device)
-    gptconf = GPTConfig(**gpt_ckpt['model_args'])
-    gpt = HookedGPT(gptconf)
-    state_dict = gpt_ckpt['model']
-    compile = False # TODO: why do this?
-    unwanted_prefix = '_orig_mod.' # TODO: why do this and the next three lines?
-    for key, val in list(state_dict.items()):
-        if key.startswith(unwanted_prefix):
-            state_dict[key[len(unwanted_prefix):]] = state_dict.pop(key)
-    gpt.load_state_dict(state_dict)
-    gpt.eval()
-    gpt.to(device)
-    if compile:
-        gpt = torch.compile(gpt) # requires PyTorch 2.0 (optional)
-    config['block_size'] = block_size = gpt.config.block_size # T
-
-    ## load tokenizer
-    load_meta = False
-    meta_path = os.path.join(os.path.dirname(current_dir), 'transformer', 'data', gpt_ckpt['config']['dataset'], 'meta.pkl')
-    load_meta = os.path.exists(meta_path)
-    if load_meta:
-        print(f"Loading meta from {meta_path}...")
-        with open(meta_path, 'rb') as f:
-            meta = pickle.load(f)
-        # TODO want to make this more general to arbitrary encoder/decoder schemes
-        stoi, itos = meta['stoi'], meta['itos']
-        encode = lambda s: [stoi[c] for c in s]
-        decode = lambda l: ''.join([itos[i] for i in l])
-    else:
-        # ok let's assume gpt-2 encodings by default
-        print("No meta.pkl found, assuming GPT-2 encodings...")
-        enc = tiktoken.get_encoding("gpt2")
-        encode = lambda s: enc.encode(s, allowed_special={"<|endoftext|>"})
-        decode = lambda l: enc.decode(l)
-
+    autoencoder = resourceloader.autoencoder
+    gpt = resourceloader.transformer
+    text_data = resourceloader.text_data
+    block_size = gpt.config.block_size
+    encode, decode = resourceloader.load_tokenizer()
+    n_features, n_ffwd = autoencoder.encoder.weight.shape
+    html_out = os.path.join(os.path.dirname(os.path.abspath('.')), autoencoder_dir, str(autoencoder_subdir))
     
     ## select X, Y from text data
     T = block_size
@@ -168,7 +138,7 @@ if __name__ == '__main__':
     B = eval_batch_size
     
     ## create the main HTML page
-    create_main_html_page(n_features=n_features, dirpath=autoencoder_path)
+    create_main_html_page(n_features=n_features, dirpath=html_out)
 
     # TODO: dynamically set n_features_per_phase and n_phases by reading off free memory in the system
     ## due to memory constraints, compute feature data in phases, processing n_features_per_phase features in each phase 
@@ -244,7 +214,7 @@ if __name__ == '__main__':
 
             # if neuron is dead, write a dead neuron page
             if num_nonzero_acts == 0:
-                write_dead_feature_page(feature_id=feature_id, dirpath=autoencoder_path)
+                write_dead_feature_page(feature_id=feature_id, dirpath=html_out)
                 continue 
 
             ## make a histogram of non-zero activations
@@ -253,14 +223,14 @@ if __name__ == '__main__':
             make_histogram(activations=non_zero_acts, 
                            density=act_density, 
                            feature_id=feature_id,
-                           dirpath=autoencoder_path)
+                           dirpath=html_out)
 
             # if neuron has very few non-zero activations, consider it an ultralow density neurons
             if num_nonzero_acts < I * X:
                 write_ultralow_density_feature_page(feature_id=feature_id, 
                                                     decode=decode,
                                                     top_acts_data=top_acts_data_kWH[:num_nonzero_acts, :, h],
-                                                    dirpath=autoencoder_path)
+                                                    dirpath=html_out)
                 continue
 
             ## sample I intervals of activations when feature is alive
@@ -283,5 +253,7 @@ if __name__ == '__main__':
                                      decode=decode,
                                      top_acts_data=top_acts_data_kWH[:, :, h],
                                      sampled_acts_data = sampled_acts_data_IXW,
-                                     dirpath=autoencoder_path)
+                                     dirpath=html_out)
 
+        if phase == 1:
+            break
