@@ -2,7 +2,7 @@
 Train a Sparse AutoEncoder model
 
 Run on a macbook on a Shakespeare dataset as 
-python train.py --dataset=shakespeare_char --gpt_dir=out_sc_1_2_32 --eval_contexts=20 --eval_batch_size=16 --batch_size=128 --device=cpu --eval_interval=100 --n_features=1024 --resampling_interval=150 --wandb_log=True
+python train.py --dataset=shakespeare_char --gpt_ckpt_dir=out_sc_1_2_32 --eval_contexts=20 --eval_batch_size=16 --batch_size=128 --device=cpu --eval_interval=100 --n_features=1024 --resampling_interval=150 --wandb_log=True
 """
 import os
 import torch
@@ -16,7 +16,7 @@ from utils.plotting_utils import make_histogram_image
 device = 'cuda'
 seed = 1442
 dataset = 'openwebtext'
-gpt_dir = 'out' 
+gpt_ckpt_dir = 'out' 
 wandb_log = True
 l1_coeff = 3e-3
 learning_rate = 3e-4
@@ -38,22 +38,17 @@ config_keys = [k for k,v in globals().items() if not k.startswith('_') and isins
 exec(open('configurator.py').read()) # overrides from command line or config file
 config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
-
-# variables that depend on input parameters
-config['num_eval_batches'] = num_eval_batches = eval_contexts // eval_batch_size
     
 torch.manual_seed(seed)
+# initiating ResourceLoader in training mode loads Transformer checkpoint, text data, and autoencoder data
 resourceloader = ResourceLoader(
                             dataset=dataset, 
-                            gpt_dir=gpt_dir,
+                            gpt_ckpt_dir=gpt_ckpt_dir,
                             device=device,
+                            mode="train",
                             )
 
-# load tokenized text dataset, transformer weights, and autoencoder data
-text_data = resourceloader.load_text_data() 
-gpt = resourceloader.load_transformer_model()
-autoencoder_data = resourceloader.load_autoencoder_data()
-
+gpt = resourceloader.transformer # TODO: either it should be called transformer or gpt
 autoencoder = AutoEncoder(n_inputs = 4 * resourceloader.transformer.config.n_embd, 
                             n_latents = n_features, 
                             lam = l1_coeff, 
@@ -70,7 +65,7 @@ if save_checkpoint:
 
 ############## TRAINING LOOP ###############
 start_time = time.time()
-num_steps = resourceloader.num_examples_total  // batch_size
+num_steps = resourceloader.autoencoder_data_info["total_examples"]  // batch_size
 
 for step in range(num_steps):
  
@@ -121,6 +116,7 @@ for step in range(num_steps):
         feat_acts_count = torch.zeros(n_features, dtype=torch.float32)
 
         # get batches of text data and evaluate the autoencoder on MLP activations
+        num_eval_batches = eval_contexts // eval_batch_size
         for iter in range(num_eval_batches):
             x, y = resourceloader.get_text_batch(num_contexts=eval_batch_size)
 

@@ -2,7 +2,7 @@
 Generate training data for sparse autoencoder. 
 
 Run on a Macbook as
-python -u prepare.py --total_contexts=5000 --tokens_per_context=16 --dataset=shakespeare_char --gpt_dir=out-shakespeare-char
+python -u prepare.py --total_contexts=5000 --tokens_per_context=16 --dataset=shakespeare_char --gpt_dir=out_sc_1_2_32
 
 If constrained by node RAM, run this file multiple times to generate data.
 Make sure to pass different seeds so as to avoid duplicates, e.g.
