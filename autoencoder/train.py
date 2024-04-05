@@ -103,9 +103,12 @@ for step in range(num_steps):
     
     # perform neuron resampling if step is a multiple of resampling interval
     if (step+1) % resampling_interval == 0 and step < num_resamples * resampling_interval:
-        print(f'{len(autoencoder.dead_neurons)} neurons to be resampled at step = {step}')
-        resampling_data = resourceloader.select_resampling_data(size=resampling_data_size)
-        autoencoder.resample_dead_neurons(data=resampling_data, optimizer=optimizer, batch_size=batch_size)
+        num_dead_neurons = len(autoencoder.dead_neurons)
+        print(f'{num_dead_neurons} neurons to be resampled at step = {step}')
+        if num_dead_neurons > 0:
+            autoencoder.resample_dead_neurons(data=resourceloader.select_resampling_data(size=resampling_data_size), 
+                                              optimizer=optimizer, 
+                                              batch_size=batch_size)
     
     ### ------------ log info ----------- ######
     if (step % eval_interval == 0) or step == num_steps - 1:
@@ -126,7 +129,7 @@ for step in range(num_steps):
         # get batches of text data and evaluate the autoencoder on MLP activations
         for iter in range(eval_iters):
             if iter % 20 == 0:
-                print(f'Performing evaluation at iteration # ({iter} - {min(iter+19, eval_iters)})/{eval_iters}')
+                print(f'Performing evaluation at iterations # ({iter} - {min(iter+19, eval_iters)})/{eval_iters}')
             x, y = resourceloader.get_text_batch(num_contexts=eval_batch_size)
 
             _, nll_loss = gpt(x, y)
