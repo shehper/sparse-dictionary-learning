@@ -10,7 +10,6 @@ import os
 import numpy as np
 import sys 
 import gc
-import psutil
 from main_page import create_main_html_page
 from subpages import write_alive_feature_page, write_dead_feature_page, write_ultralow_density_feature_page
 
@@ -24,22 +23,24 @@ from resource_loader import ResourceLoader
 from utils.plotting_utils import make_histogram
 
 # hyperparameters 
-device = 'cuda' # change it to cpu
-seed = 1442
-dataset = 'openwebtext' 
-gpt_ckpt_dir = 'out' 
-autoencoder_dir = 'out' # directory containing weights of various trained autoencoder models
+# data and model
+dataset = 'openwebtext' # TODO: dataset should probably be called gpt_dataset.
+gpt_ckpt_dir = 'out' # TODO: autoencoder_subdir should be renamed sae_ckpt_dir. It should be a subdirectory of autoencoder/out/gpt_dataset
 autoencoder_subdir = 0.0 # subdirectory containing the specific model to consider # TODO: might have to think about it. It shouldn't be a float.
+# evaluation hyperparameters
+num_contexts = 10000 # N
 eval_batch_size = 156 # batch size for computing reconstruction nll # TODO: this should have a different name. # B
-num_contexts = 10000 # 10 million in anthropic paper; but we will choose the entire dataset as our dataset is small # N
-num_sampled_tokens = 10 # same as Anthropic's paper; number of tokens in each context on which feature activations will be computed # M
-window_radius = 4 # number of tokens to print/save on either side of the token with feature activation. 
-# let 2 * window_radius + 1 be denoted by W.
-n_features_per_phase = 20 # due to memory constraints, it's useful to process features in phases. 
-k = 10 # number of top activations for each feature; 20 in Anthropic's visualization
+# feature page hyperparameters
+num_sampled_tokens = 10 # number of tokens in each context on which feature activations will be computed # M
+window_radius = 4 # number of tokens to print on either side of a sampled token.. 
+k = 10 # number of top activations for each feature # TODO: should probably be called num_top_acts = 
 n_intervals = 12 # number of intervals to divide activations in; = 12 in Anthropic's work
 n_exs_per_interval = 5 # number of examples to sample from each interval of activations 
-modes_density_cutoff = 1e-3 # TODO: remove this; it is not being used anymor
+n_features_per_phase = 20 # due to memory constraints, it's useful to process features in phases.
+# system
+device = 'cuda' # change it to cpu
+# reproducibility
+seed = 1442
 
 def select_context_windows(*args, num_sampled_tokens, window_radius, fn_seed=0):
     """
@@ -101,8 +102,6 @@ def select_context_windows(*args, num_sampled_tokens, window_radius, fn_seed=0):
 
     return result_tensors
 
-
-
 if __name__ == '__main__':
 
     # -----------------------------------------------------------------------------
@@ -126,9 +125,11 @@ if __name__ == '__main__':
     block_size = gpt.config.block_size
     encode, decode = resourceloader.load_tokenizer()
     n_features, n_ffwd = autoencoder.encoder.weight.shape
-    html_out = os.path.join(os.path.dirname(os.path.abspath('.')), autoencoder_dir, str(autoencoder_subdir))
+    html_out = os.path.join(os.path.dirname(os.path.abspath('.')), 'out', str(autoencoder_subdir))
     
     ## select X, Y from text data
+    # TODO: use resourceloader.get_text_batch here. 
+    # X = resourceloader.get_text_batch(num_contexts=num_contexts)
     T = block_size
     N = num_contexts
     # if number of contexts is too large (larger than length of data//block size), may as well use the entire dataset
@@ -196,12 +197,6 @@ if __name__ == '__main__':
             "tokens": data_MW["tokens"][topk_indices_kH].transpose(dim0=1, dim1=2),
             "feature_acts": torch.stack([data_MW["feature_acts_H"][topk_indices_kH[:, i], :, i] for i in range(H)], dim=-1)
             }, batch_size=[k, W, H])
-
-        # print memory again # TODO: remove these later
-        memory = psutil.virtual_memory()
-        print(f'Memory taken by top_acts_data_kWH["tokens"]: {top_acts_data_kWH["tokens"].element_size() * top_acts_data_kWH["tokens"].numel() // 1024**3:.2f}')
-        print(f'Memory taken by top_acts_data_kWH["feature_acts"]: {top_acts_data_kWH["feature_acts"].element_size() * top_acts_data_kWH["feature_acts"].numel() // 1024**3:.2f}')
-        print(f'Available memory after initiating top_acts_data_kWH: {memory.available / (1024**3):.4f} GB; memory usage: {memory.percent}%')
             
         # TODO: is my definition of ultralow density neurons consistent with Anthropic's definition?
         # TODO: make sure there are no bugs in switch back and forth between feature id and h.
@@ -249,12 +244,6 @@ if __name__ == '__main__':
                 "tokens": data_MW["tokens"][original_indices_IX],
                 "feature_acts": curr_feature_acts_MW[original_indices_IX],
                 }, batch_size=[I, X, W])
-
-            # print memory again  # TODO: remove these later
-            memory = psutil.virtual_memory()
-            print(f'Memory taken by sampled_acts_data_IXW["tokens"]: {sampled_acts_data_IXW["tokens"].element_size() * sampled_acts_data_IXW["tokens"].numel() // 1024**3:.2f} GB')
-            print(f'Memory taken by sampled_acts_data_IXW["feature_acts"]: {sampled_acts_data_IXW["feature_acts"].element_size() * sampled_acts_data_IXW["feature_acts"].numel() // 1024**3:.2f} GB')
-            print(f'Available memory after initiating sampled_acts_data_IXW: {memory.available / (1024**3):.4f} GB; memory usage: {memory.percent}%')
 
             # ## write feature page for an alive feature
             write_alive_feature_page(feature_id=feature_id, 

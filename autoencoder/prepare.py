@@ -1,7 +1,7 @@
 """"
 Prepares training dataset for our autoencoder. 
 Run on Macbook as
-python -u prepare.py --total_contexts=5000 --num_sampled_tokens=16 --dataset=shakespeare_char --gpt_ckpt_dir=out_sc_1_2_32
+python -u prepare.py --num_contexts=5000 --num_sampled_tokens=16 --dataset=shakespeare_char --gpt_ckpt_dir=out_sc_1_2_32
 """
 import os
 import torch
@@ -10,13 +10,17 @@ import psutil
 from resource_loader import ResourceLoader
 
 # Default parameters, can be overridden by command line arguments or a configuration file
-seed = 0
-device = 'cpu'
-total_contexts = int(2e6)  # Number of context windows
-num_sampled_tokens = 200  # Tokens per context window
+# dataset and model
 dataset = 'openwebtext'
 gpt_ckpt_dir = 'out'  # Model checkpoint directory
-n_files = 20  # Number of output files
+# autoencoder data size
+num_contexts = int(2e6)  # Number of context windows
+num_sampled_tokens = 200  # Tokens per context window
+# system
+device = 'cpu'
+num_partitions = 20  # Number of output files
+# reproducibility
+seed = 0
 
 # -----------------------------------------------------------------------------
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
@@ -28,29 +32,29 @@ torch.manual_seed(seed)
 
 # Load resources and model
 resource_loader = ResourceLoader(dataset=dataset, gpt_ckpt_dir=gpt_ckpt_dir, mode="prepare")
-gpt_model = resource_loader.transformer
+gpt = resource_loader.transformer
 
 # Get model configurations
-block_size = gpt_model.config.block_size
-n_ffwd = 4 * gpt_model.config.n_embd 
+block_size = gpt.config.block_size
+n_ffwd = 4 * gpt.config.n_embd 
 
 # Prepare storage for activations
-data_storage = torch.zeros(total_contexts * num_sampled_tokens, n_ffwd, dtype=torch.float32)
-shuffled_indices = torch.randperm(total_contexts * num_sampled_tokens)
+data_storage = torch.zeros(num_contexts * num_sampled_tokens, n_ffwd, dtype=torch.float32)
+shuffled_indices = torch.randperm(num_contexts * num_sampled_tokens)
 
 def compute_activations():
     start_time = time.time()
     gpt_batch_size = 500
-    n_batches = total_contexts // gpt_batch_size
+    n_batches = num_contexts // gpt_batch_size
 
     for batch in range(n_batches):
         # Load batch and compute activations
         x, _ = resource_loader.get_text_batch(gpt_batch_size)
-        _, _ = gpt_model(x)  # Forward pass
-        activations = gpt_model.mlp_activation_hooks[0]  # Retrieve activations
+        _, _ = gpt(x)  # Forward pass
+        activations = gpt.mlp_activation_hooks[0]  # Retrieve activations
 
         # Clean up to save memory
-        gpt_model.clear_mlp_activation_hooks()
+        gpt.clear_mlp_activation_hooks()
 
         # Process and store activations
         token_locs = torch.stack([torch.randperm(block_size)[:num_sampled_tokens] for _ in range(gpt_batch_size)])
@@ -61,12 +65,12 @@ def compute_activations():
               f"Memory: {psutil.virtual_memory().available / (1024 ** 3):.2f} GB available, {psutil.virtual_memory().percent}% used.")
 
 def save_activations():
-    autoencoder_data_dir = os.path.join(os.path.abspath('.'), 'data', dataset, str(n_ffwd))
-    os.makedirs(autoencoder_data_dir, exist_ok=True)
-    examples_per_file = total_contexts * num_sampled_tokens // n_files
+    sae_data_dir = os.path.join(os.path.abspath('.'), 'data', dataset, str(n_ffwd))
+    os.makedirs(sae_data_dir, exist_ok=True)
+    examples_per_file = num_contexts * num_sampled_tokens // num_partitions
 
-    for i in range(n_files):
-        file_path = f'{autoencoder_data_dir}/{seed * n_files + i}.pt'
+    for i in range(num_partitions):
+        file_path = f'{sae_data_dir}/{seed * num_partitions + i}.pt'
         if os.path.exists(file_path):
             print(f"Warning: File {file_path} already exists and will be overwritten.")
 

@@ -13,25 +13,31 @@ from resource_loader import ResourceLoader
 from utils.plotting_utils import make_histogram_image
 
 ## hyperparameters
-device = 'cuda'
-seed = 1442
+# dataset and model
 dataset = 'openwebtext'
 gpt_ckpt_dir = 'out' 
-wandb_log = True
+# training
+n_features = 4096
+batch_size = 8192 # batch size for autoencoder training
 l1_coeff = 3e-3
 learning_rate = 3e-4
-batch_size = 8192 # batch size for autoencoder training
-n_features = 4096
-eval_batch_size = 16 # batch size (number of GPT contexts) for evaluation
-eval_iters = 200 # number of iterations in the evaluation loop
-eval_interval = 1000 # number of training steps after which the autoencoder is evaluated
-save_checkpoint = True # whether to save model, optimizer, etc or not
-save_interval = 10000 # number of training steps after which a checkpoint will be saved
-out_dir = 'out' # directory containing trained autoencoder model weights
-# and to be consistent with top_activations.py
 resampling_interval = 25000 # number of training steps after which neuron resampling will be performed
 num_resamples = 4 # number of times resampling is to be performed; it is done 4 times in Anthropic's paper
 resampling_data_size = 819200
+# evaluation
+eval_batch_size = 16 # batch size (number of GPT contexts) for evaluation
+eval_iters = 200 # number of iterations in the evaluation loop
+eval_interval = 1000 # number of training steps after which the autoencoder is evaluated
+# I/O
+save_checkpoint = True # whether to save model, optimizer, etc or not
+save_interval = 10000 # number of training steps after which a checkpoint will be saved
+out_dir = 'out' # directory containing trained autoencoder model weights
+# wandb logging
+wandb_log = True
+# system
+device = 'cuda'
+# reproducibility
+seed = 1442
 
 # -----------------------------------------------------------------------------
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
