@@ -7,6 +7,7 @@ S: num_sampled_tokens
 R: window_radius
 W: window_length
 L: number of autoencoder latents
+H: Number of features being processed in a phase
 N: total_sampled_tokens = (num_contexts * num_sampled_tokens)
 T: block_size (same as nanoGPT)
 B: gpt_batch_size (same as nanoGPT)
@@ -113,7 +114,7 @@ class FeatureBrowser(ResourceLoader):
         In each phase, compute feature activations and feature ablations for (MLP activations of) text data `self.X`.
         Sample context windows from this data. 
         Next, use `get_top_activations` to get tokens (along with windows) with top activations for each feature.
-        Note that sampled tokens are the same in all phases, thanks to the use of fn_seed in `select_context_windows`.
+        Note that sampled tokens are the same in all phases, thanks to the use of fn_seed in `_sample_context_windows`.
         """
         self.write_main_page() 
 
@@ -136,10 +137,15 @@ class FeatureBrowser(ResourceLoader):
         context_window_data = self._initialize_context_window_data(feature_start_idx, feature_end_idx)
 
         for iter in range(self.num_batches):
-            print(f"Computing feature activations for batch # {iter+1}/{self.num_batches}")
+            if iter % 20 == 0:
+                print(f"computing feature activations for batches {iter+1}-{min(iter+20, self.num_batches)}/{self.num_batches}")
             batch_start_idx = iter * self.gpt_batch_size
             batch_end_idx = (iter + 1) * self.gpt_batch_size
-            x, feature_activations = self._process_batch(batch_start_idx, batch_end_idx, feature_start_idx, feature_end_idx)
+            x, feature_activations = self._compute_batch_feature_activations(batch_start_idx, 
+                                                                             batch_end_idx, 
+                                                                             feature_start_idx, 
+                                                                             feature_end_idx)
+            # x: (B, T), # feature_activations: (B, T, H)
             x_context_windows, feature_acts_context_windows = self._sample_context_windows( x, 
                                                                                             feature_activations,  
                                                                                             fn_seed=self.seed+iter)
@@ -152,15 +158,31 @@ class FeatureBrowser(ResourceLoader):
         return context_window_data
 
     def compute_top_activations(self, data):
-        """"Computes top activations given context window data"""
-        num_features_in_phase = data["feature_acts"].shape[-1]
-        _, topk_indices = torch.topk(data["feature_acts"][:, self.window_radius, :], k=self.num_top_activations, dim=0) # (k, H)
-        top_acts_data = TensorDict({
-            "tokens": data["tokens"][topk_indices].transpose(dim0=1, dim1=2),
-            "feature_acts": torch.stack([data["feature_acts"][topk_indices[:, i], :, i] for i in range(num_features_in_phase)], dim=-1)
-        }, batch_size=[self.num_top_activations, self.window_length, num_features_in_phase]) # (k, W, H)
+        """Computes top activations of given context window data.
+        `data` is a TensorDict with keys `tokens` and `feature_acts` of shapes (B*S, W) and (B * S, W, H) respectively."""
 
-        return top_acts_data
+        num_features = data["feature_acts"].shape[-1] # Label this as H.
+
+        # Find the indices of the top activations at the center of the window
+        _, top_indices = torch.topk(data["feature_acts"][:, self.window_radius, :],
+                                    k=self.num_top_activations, dim=0)  # (k, H)
+
+        # Prepare the tokens corresponding to the top activations
+        top_tokens = data["tokens"][top_indices].transpose(dim0=1, dim1=2) # (k, W, H)
+
+        # Extract and stack the top feature activations for each feature across all windows
+        top_feature_activations = torch.stack(
+            [data["feature_acts"][top_indices[:, i], :, i] for i in range(num_features)],
+            dim=-1 
+        ) # (k, W, H)
+
+        # Bundle the top tokens and feature activations into a structured data format
+        top_activations_data = TensorDict({
+            "tokens": top_tokens,
+            "feature_acts": top_feature_activations
+        }, batch_size=[self.num_top_activations, self.window_length, num_features]) # (k, W< H)
+
+        return top_activations_data
 
     def write_feature_page(self, phase, h, data, top_acts_data):
         """"Writes features pages for dead / alive neurons; also makes a histogram.
@@ -216,26 +238,12 @@ class FeatureBrowser(ResourceLoader):
         Given tensors each of shape (B, T, ...), this function returns tensors containing
         windows around randomly selected tokens. The shape of the output is (B * S, W, ...),
         where S is the number of tokens in each context to evaluate, and W is the window size
-        (including the token itself and tokens on either side).
+        (including the token itself and tokens on either side). By default, S = self.num_sampled_tokens,
+        W = self.window_length.
 
-        Parameters: #TODO: update parameters here
+        Parameters: 
         - args: Variable number of tensor arguments, each of shape (B, T, ...)
-        - num_sampled_tokens (int): The number of tokens in each context on which to evaluate
-        - window_radius (int): The number of tokens on either side of the sampled token
         - fn_seed (int, optional): Seed for random number generator, default is 0
-
-        Returns:
-        - A list of tensors, each of shape (B * S, W, ...), where S is `num_sampled_tokens` and W is
-        the window size calculated as 2 * `window_radius` + 1.
-
-        Raises:
-        - AssertionError: If no tensors are provided, or if the tensors do not have the required shape.
-
-        Example usage:
-        ```
-        tensor1 = torch.randn(10, 20, 30)  # Example tensor
-        windows = select_context_windows(tensor1, num_sampled_tokens=5, window_radius=2)
-        ```
         """
         if not args or not all(isinstance(tensor, torch.Tensor) and tensor.ndim >= 2 for tensor in args):
             raise ValueError("All inputs must be torch tensors with at least 2 dimensions.")
@@ -247,11 +255,9 @@ class FeatureBrowser(ResourceLoader):
 
         torch.manual_seed(fn_seed)
         num_sampled_tokens=self.num_sampled_tokens
-        window_radius=self.window_radius
-        window_length = 2 * window_radius + 1
-        token_idx = torch.stack([window_radius + torch.randperm(T - 2 * window_radius)[:num_sampled_tokens] 
-                                for _ in range(B)], dim=0) # (B, S)
-        window_idx = token_idx.unsqueeze(-1) + torch.arange(-window_radius, window_radius + 1) # (B, S, W)
+        token_idx = torch.stack([self.window_radius + torch.randperm(T - 2 * self.window_radius)[:num_sampled_tokens] 
+                                for _ in range(B)], dim=0) # (B, S) # use of torch.randperm for sampling without replacement
+        window_idx = token_idx.unsqueeze(-1) + torch.arange(-self.window_radius, self.window_radius + 1) # (B, S, W)
         batch_idx = torch.arange(B).view(-1, 1, 1).expand_as(window_idx) # (B, S, W)
 
         result_tensors = []
@@ -259,10 +265,10 @@ class FeatureBrowser(ResourceLoader):
             if tensor.ndim == 3:
                 L = tensor.shape[2]
                 sliced_tensor = tensor[batch_idx, window_idx, :] # (B, S, W, L)
-                sliced_tensor = sliced_tensor.view(-1, window_length, L) # (B *S , W, L)
+                sliced_tensor = sliced_tensor.view(-1, self.window_length, L) # (B *S , W, L)
             elif tensor.ndim == 2:
                 sliced_tensor = tensor[batch_idx, window_idx]  # (B, S, W)
-                sliced_tensor = sliced_tensor.view(-1, window_length) # (B*S, W)
+                sliced_tensor = sliced_tensor.view(-1, self.window_length) # (B*S, W)
             else:
                 raise ValueError("Tensor dimensions not supported. Only 2D and 3D tensors are allowed.")
             result_tensors.append(sliced_tensor)
@@ -277,7 +283,7 @@ class FeatureBrowser(ResourceLoader):
         }, batch_size=[self.total_sampled_tokens, self.window_length]) # (N * S, W)
         return context_window_data
 
-    def _process_batch(self, batch_start_idx, batch_end_idx, feature_start_idx, feature_end_idx):
+    def _compute_batch_feature_activations(self, batch_start_idx, batch_end_idx, feature_start_idx, feature_end_idx):
         """Computes feature activations for given batch of input text.
         """
         x = self.X[batch_start_idx:batch_end_idx].to(self.device)
@@ -302,3 +308,4 @@ if __name__ == "__main__":
 
 
  #TODO: tooltip css function should be imported separately and written explicitly I think, for clarity
+ # TODO: methods that need to be revisited: write_feature_page, sample_and_write.
