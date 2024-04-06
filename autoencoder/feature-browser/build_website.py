@@ -21,6 +21,7 @@ import torch
 from tensordict import TensorDict 
 import os
 import sys 
+from math import ceil
 from main_page import create_main_html_page
 from subpages import write_alive_feature_page, write_dead_feature_page, write_ultralow_density_feature_page
 
@@ -94,79 +95,74 @@ class FeatureBrowser(ResourceLoader):
         self.total_sampled_tokens = self.num_contexts * self.num_sampled_tokens  # Define total sampled tokens
 
         self.gpt_batch_size = config.gpt_batch_size
-        self.num_features_per_phase = config.num_features_per_phase
         self.n_features = self.autoencoder.n_latents
-        self.num_phases = self.n_features // self.num_features_per_phase + (self.n_features % self.num_features_per_phase != 0)
-        self.num_batches = self.num_contexts // self.gpt_batch_size + (self.num_contexts % self.gpt_batch_size != 0)
+        self.num_phases = 52 # TODO: generalize it
+        self.num_features_per_phase = ceil(self.n_features / self.num_phases)
+        self.num_batches = ceil(self.num_contexts / self.gpt_batch_size)
         
         self.encode, self.decode = self.load_tokenizer()
+        self.X, _ = self.get_text_batch(num_contexts=self.num_contexts)
         self.html_out = os.path.join(os.path.dirname(os.path.abspath('.')), 'out', config.dataset, str(config.sae_ckpt_dir))        
-        self.seed = config.seed 
+        self.seed = config.seed
 
         print(f"Will process features in {self.num_phases} phases. Each phase will have forward pass in {self.num_batches} batches")
 
     def build(self):
-        create_main_html_page(n_features=self.n_features, dirpath=self.html_out)
-        X, _ = self.get_text_batch(num_contexts=self.num_contexts)
+        """
+        Logic: Process features in `num_phases` phases.
+        In each phase, compute feature activations and feature ablations for (MLP activations of) text data `self.X`.
+        Sample context windows from this data. 
+        Next, use `get_top_activations` to get tokens (along with windows) with top activations for each feature.
+        Note that sampled tokens are the same in all phases, thanks to the use of fn_seed in `select_context_windows`.
+        """
+        self.write_main_page() 
 
         for phase in range(self.num_phases):
-            num_features_in_phase = self.calculate_features_in_phase(phase)
-            print(f'working on phase # {phase + 1}/{self.num_phases}: \
-                  features # {phase * self.num_features_per_phase} through {(phase + 1) * self.num_features_per_phase}')
-            data = self.compute_feature_activations(phase, num_features_in_phase, X)
-            self.process_phase(data, num_features_in_phase, phase)
+            feature_start_idx = phase * self.num_features_per_phase
+            feature_end_idx = (phase + 1) * self.num_features_per_phase
+            print(f'working on features # {feature_start_idx} - {feature_end_idx} in phase {phase + 1}/{self.num_phases}')
+            context_window_data = self.compute_context_window_data(feature_start_idx, feature_end_idx)
+            top_acts_data = self.compute_top_activations(context_window_data)
+            for h in range(0, feature_end_idx-feature_start_idx):
+                self.write_feature_page(phase, h, context_window_data, top_acts_data)
 
             if phase == 1:
                 print(f'stored new feature browser pages in {self.html_out}')
                 break
 
-    def calculate_features_in_phase(self, phase):
-        if phase < self.num_phases - 1:
-            return self.num_features_per_phase
-        else:
-            return self.n_features - (phase * self.num_features_per_phase)
-
-    def compute_feature_activations(self, phase, num_features_in_phase, X):
-        data = TensorDict({
-            "tokens": torch.zeros(self.total_sampled_tokens, self.window_length, dtype=torch.int32),
-            "feature_acts": torch.zeros(self.total_sampled_tokens, self.window_length, num_features_in_phase),
-        }, batch_size=[self.total_sampled_tokens, self.window_length]) # (N * S, W)
+    def compute_context_window_data(self, feature_start_idx, feature_end_idx):
+        """Compute data of tokens and feature activations for all context windows. 
+        This should probably also include feature ablations."""
+        context_window_data = self._initialize_context_window_data(feature_start_idx, feature_end_idx)
 
         for iter in range(self.num_batches):
-            print(f"Computing feature activations for batch # {iter+1}/{self.num_batches} in phase # {phase + 1}")
-            start_idx = iter * self.gpt_batch_size
-            end_idx = (iter + 1) * self.gpt_batch_size
-            x = X[start_idx:end_idx].to(self.device)
-            _, _ = self.transformer(x)
-            mlp_acts = self.transformer.mlp_activation_hooks[0] # (B, T, 4C)
-            self.transformer.clear_mlp_activation_hooks()
-            feature_acts = self.autoencoder.get_feature_activations(inputs=mlp_acts, 
-                                                                        start_idx=phase*num_features_in_phase, 
-                                                                        end_idx=(phase+1)*num_features_in_phase) # (B, T, H)
-            X_PW, feature_acts_PWH = self.select_context_windows(x, feature_acts, 
-                                                            num_sampled_tokens=self.num_sampled_tokens, 
-                                                            window_radius=self.window_radius, 
-                                                            fn_seed=self.seed+iter)
-            idx_start = iter * self.gpt_batch_size * self.num_sampled_tokens
-            idx_end = (iter + 1) * self.gpt_batch_size * self.num_sampled_tokens
-            data["tokens"][idx_start:idx_end] = X_PW
-            data["feature_acts"][idx_start:idx_end] = feature_acts_PWH
+            print(f"Computing feature activations for batch # {iter+1}/{self.num_batches}")
+            batch_start_idx = iter * self.gpt_batch_size
+            batch_end_idx = (iter + 1) * self.gpt_batch_size
+            x, feature_activations = self._process_batch(batch_start_idx, batch_end_idx, feature_start_idx, feature_end_idx)
+            x_context_windows, feature_acts_context_windows = self._sample_context_windows( x, 
+                                                                                            feature_activations,  
+                                                                                            fn_seed=self.seed+iter)
+            # context_window_tokens: (B * S, W), context_window_feature_acts: (B * S, W, H)
+            idx_start = batch_start_idx * self.num_sampled_tokens
+            idx_end = batch_end_idx * self.num_sampled_tokens
+            context_window_data["tokens"][idx_start:idx_end] = x_context_windows
+            context_window_data["feature_acts"][idx_start:idx_end] = feature_acts_context_windows
 
-        return data
+        return context_window_data
 
-    def process_phase(self, data, num_features_in_phase, phase):
-        """"Computes top activations and calls process_feature to write feature pages"""
-        print(f'computing top k feature activations in phase # {phase + 1}/{self.num_phases}')
-        _, topk_indices_kH = torch.topk(data["feature_acts"][:, self.window_radius, :], k=self.num_top_activations, dim=0)
-        top_acts_data_kWH = TensorDict({
-            "tokens": data["tokens"][topk_indices_kH].transpose(dim0=1, dim1=2),
-            "feature_acts": torch.stack([data["feature_acts"][topk_indices_kH[:, i], :, i] for i in range(num_features_in_phase)], dim=-1)
-        }, batch_size=[self.num_top_activations, self.window_length, num_features_in_phase])
+    def compute_top_activations(self, data):
+        """"Computes top activations given context window data"""
+        num_features_in_phase = data["feature_acts"].shape[-1]
+        _, topk_indices = torch.topk(data["feature_acts"][:, self.window_radius, :], k=self.num_top_activations, dim=0) # (k, H)
+        top_acts_data = TensorDict({
+            "tokens": data["tokens"][topk_indices].transpose(dim0=1, dim1=2),
+            "feature_acts": torch.stack([data["feature_acts"][topk_indices[:, i], :, i] for i in range(num_features_in_phase)], dim=-1)
+        }, batch_size=[self.num_top_activations, self.window_length, num_features_in_phase]) # (k, W, H)
 
-        for h in range(num_features_in_phase):
-            self.process_feature(data, phase, h, top_acts_data_kWH)
+        return top_acts_data
 
-    def process_feature(self, data, phase, h, top_acts_data_kWH):
+    def write_feature_page(self, phase, h, data, top_acts_data):
         """"Writes features pages for dead / alive neurons; also makes a histogram.
         For alive features, it calls sample_and_write."""
         curr_feature_acts_MW = data["feature_acts"][:, :, h]
@@ -188,33 +184,32 @@ class FeatureBrowser(ResourceLoader):
         if num_nonzero_acts < self.num_intervals * self.samples_per_interval:
             write_ultralow_density_feature_page(feature_id=feature_id, 
                                                 decode=self.decode,
-                                                top_acts_data=top_acts_data_kWH[:num_nonzero_acts, :, h],
+                                                top_acts_data=top_acts_data[:num_nonzero_acts, :, h],
                                                 dirpath=self.html_out)
             return
 
-        self.sample_and_write(data, feature_id, num_nonzero_acts, mid_token_feature_acts_M, curr_feature_acts_MW, top_acts_data_kWH, h)
+        self.sample_and_write(data, feature_id, num_nonzero_acts, mid_token_feature_acts_M, curr_feature_acts_MW, top_acts_data, h)
 
-    def sample_and_write(self, data, feature_id, num_nonzero_acts, mid_token_feature_acts_M, curr_feature_acts_MW, top_acts_data_kWH, h):
-        sorted_acts_M, sorted_indices_M = torch.sort(mid_token_feature_acts_M, descending=True)
+    def sample_and_write(self, data, feature_id, num_nonzero_acts, mid_token_feature_acts_M, curr_feature_acts_MW, top_acts_data, h):
+        _, sorted_indices = torch.sort(mid_token_feature_acts_M, descending=True) # (N*S,)
         sampled_indices = torch.stack([
             j * num_nonzero_acts // self.num_intervals + 
             torch.randperm(num_nonzero_acts // self.num_intervals)[:self.samples_per_interval].sort()[0] 
             for j in range(self.num_intervals)
         ], dim=0)
-        original_indices = sorted_indices_M[sampled_indices]
-        sampled_acts_data_IXW = TensorDict({
-            "tokens": data["tokens"][original_indices],
+        original_indices = sorted_indices[sampled_indices] # TODO: explain sampled_indices and original_indices
+        sampled_acts_data = TensorDict({
+            "tokens": data["tokens"][original_indices], 
             "feature_acts": curr_feature_acts_MW[original_indices],
-        }, batch_size=[self.num_intervals, self.samples_per_interval, self.window_length])
+        }, batch_size=[self.num_intervals, self.samples_per_interval, self.window_length]) # (I, SI, W)
 
         write_alive_feature_page(feature_id=feature_id, 
                                  decode=self.decode,
-                                 top_acts_data=top_acts_data_kWH[:, :, h],
-                                 sampled_acts_data=sampled_acts_data_IXW,
+                                 top_acts_data=top_acts_data[:, :, h],
+                                 sampled_acts_data=sampled_acts_data,
                                  dirpath=self.html_out)
 
-    @staticmethod
-    def select_context_windows(*args, num_sampled_tokens, window_radius, fn_seed=0):
+    def _sample_context_windows(self, *args, fn_seed=0):
         """
         Select windows of tokens around randomly sampled tokens from input tensors.
 
@@ -223,7 +218,7 @@ class FeatureBrowser(ResourceLoader):
         where S is the number of tokens in each context to evaluate, and W is the window size
         (including the token itself and tokens on either side).
 
-        Parameters:
+        Parameters: #TODO: update parameters here
         - args: Variable number of tensor arguments, each of shape (B, T, ...)
         - num_sampled_tokens (int): The number of tokens in each context on which to evaluate
         - window_radius (int): The number of tokens on either side of the sampled token
@@ -251,6 +246,8 @@ class FeatureBrowser(ResourceLoader):
             raise ValueError("All tensors must have the same shape along the first two dimensions.")
 
         torch.manual_seed(fn_seed)
+        num_sampled_tokens=self.num_sampled_tokens
+        window_radius=self.window_radius
         window_length = 2 * window_radius + 1
         token_idx = torch.stack([window_radius + torch.randperm(T - 2 * window_radius)[:num_sampled_tokens] 
                                 for _ in range(B)], dim=0) # (B, S)
@@ -272,6 +269,29 @@ class FeatureBrowser(ResourceLoader):
 
         return result_tensors
 
+    def _initialize_context_window_data(self, feature_start_idx, feature_end_idx):
+        num_features_in_phase = feature_end_idx - feature_start_idx
+        context_window_data = TensorDict({
+            "tokens": torch.zeros(self.total_sampled_tokens, self.window_length, dtype=torch.int32),
+            "feature_acts": torch.zeros(self.total_sampled_tokens, self.window_length, num_features_in_phase),
+        }, batch_size=[self.total_sampled_tokens, self.window_length]) # (N * S, W)
+        return context_window_data
+
+    def _process_batch(self, batch_start_idx, batch_end_idx, feature_start_idx, feature_end_idx):
+        """Computes feature activations for given batch of input text.
+        """
+        x = self.X[batch_start_idx:batch_end_idx].to(self.device)
+        _, _ = self.transformer(x)
+        mlp_acts = self.transformer.mlp_activation_hooks[0] # (B, T, 4C)
+        self.transformer.clear_mlp_activation_hooks()
+        feature_activations = self.autoencoder.get_feature_activations(inputs=mlp_acts, 
+                                                                    start_idx=feature_start_idx, 
+                                                                    end_idx=feature_end_idx) # (B, T, H)
+        return x, feature_activations
+
+    def write_main_page(self):
+        create_main_html_page(n_features=self.n_features, dirpath=self.html_out)
+
 if __name__ == "__main__":
     
     torch.manual_seed(seed)
@@ -279,3 +299,6 @@ if __name__ == "__main__":
     feature_browser = FeatureBrowser(config)
     # Run the processing
     feature_browser.build()
+
+
+ #TODO: tooltip css function should be imported separately and written explicitly I think, for clarity
