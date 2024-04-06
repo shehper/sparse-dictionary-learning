@@ -58,23 +58,23 @@ exec(open('../configurator.py').read()) # overrides from command line or config 
 config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
 
-class FeatureBrowser:
-    def __init__(self, dataset, gpt_ckpt_dir, device, autoencoder_subdir, num_contexts, num_sampled_tokens, window_radius, eval_batch_size, num_top_activations, num_intervals, samples_per_interval, seed):
-        self.resourceloader = ResourceLoader(
+# TODO: should configurator be moved to after __name__ == __main__? Will it be executed if 
+# the class is imported in another file?
+# Also, we don't need config here as we are not logging anything. 
+class FeatureBrowser(ResourceLoader):
+    def __init__(self, dataset, gpt_ckpt_dir, device, autoencoder_subdir, num_contexts, num_sampled_tokens, 
+                 window_radius, eval_batch_size, num_top_activations, num_intervals, samples_per_interval, seed):
+        super().__init__(
             dataset=dataset, 
             gpt_ckpt_dir=gpt_ckpt_dir,
             device=device,
             mode="eval",
             sae_ckpt_dir=str(autoencoder_subdir),
         )
-        self.autoencoder = self.resourceloader.autoencoder
-        self.gpt = self.resourceloader.transformer
-        self.dataset = self.resourceloader.dataset
-        self.text_data = self.resourceloader.text_data
-        self.block_size = self.gpt.config.block_size
-        self.encode, self.decode = self.resourceloader.load_tokenizer()
+ 
+        self.encode, self.decode = self.load_tokenizer()
         self.n_features, self.n_ffwd = self.autoencoder.encoder.weight.shape
-        self.html_out = os.path.join(os.path.dirname(os.path.abspath('.')), 'out', self.resourceloader.dataset, str(autoencoder_subdir))
+        self.html_out = os.path.join(os.path.dirname(os.path.abspath('.')), 'out', self.dataset, str(autoencoder_subdir))        
         self.num_contexts = num_contexts
         self.num_sampled_tokens = num_sampled_tokens
         self.window_radius = window_radius
@@ -83,50 +83,49 @@ class FeatureBrowser:
         self.num_intervals = num_intervals
         self.samples_per_interval = samples_per_interval
         self.seed = seed
-        self.device = device
 
         self.total_sampled_tokens = self.num_contexts * self.num_sampled_tokens  # Define total sampled tokens
 
-    def make(self):
-        X, _ = self.resourceloader.get_text_batch(num_contexts=self.num_contexts)
-        create_main_html_page(n_features=self.n_features, dirpath=self.html_out)
-        
-        n_features_per_phase = 20  # Adjust based on memory constraints
-        n_phases = self.n_features // n_features_per_phase + (self.n_features % n_features_per_phase != 0)
-        n_batches = self.num_contexts // self.eval_batch_size + (self.num_contexts % self.eval_batch_size != 0)
-        
-        print(f"Will process features in {n_phases} phases. Each phase will have forward pass in {n_batches} batches")
+        self.n_features_per_phase = 20  # Adjust based on memory constraints
+        self.n_phases = self.n_features // self.n_features_per_phase + (self.n_features % self.n_features_per_phase != 0)
+        self.n_batches = self.num_contexts // self.eval_batch_size + (self.num_contexts % self.eval_batch_size != 0)
+        print(f"Will process features in {self.n_phases} phases. Each phase will have forward pass in {self.n_batches} batches")
 
-        for phase in range(n_phases):
-            H = self.calculate_H(phase, n_features_per_phase, n_phases)
-            print(f'working on phase # {phase + 1}/{n_phases}: features # {phase * n_features_per_phase} through {phase * n_features_per_phase + H}')
-            data = self.compute_feature_activations(phase, H, X, n_batches, n_features_per_phase)
-            self.process_phase(data, H, phase, n_features_per_phase, n_phases)
+    def build(self):
+        create_main_html_page(n_features=self.n_features, dirpath=self.html_out)
+        X, _ = self.get_text_batch(num_contexts=self.num_contexts)
+        
+        for phase in range(self.n_phases):
+            H = self.calculate_H(phase) # H needs to get a better name
+            print(f'working on phase # {phase + 1}/{self.n_phases}: \
+                  features # {phase * self.n_features_per_phase} through {phase * self.n_features_per_phase + H}')
+            data = self.compute_feature_activations(phase, H, X)
+            self.process_phase(data, H, phase)
 
             if phase == 1:
                 print(f'stored new feature browser pages in {self.html_out}')
                 break
 
-    def calculate_H(self, phase, n_features_per_phase, n_phases):
-        if phase < n_phases - 1:
-            return n_features_per_phase
+    def calculate_H(self, phase):
+        if phase < self.n_phases - 1:
+            return self.n_features_per_phase
         else:
-            return self.n_features - (phase * n_features_per_phase)
+            return self.n_features - (phase * self.n_features_per_phase)
 
-    def compute_feature_activations(self, phase, H, X, n_batches, n_features_per_phase):
+    def compute_feature_activations(self, phase, H, X):
         data = TensorDict({
             "tokens": torch.zeros(self.total_sampled_tokens, 2 * self.window_radius + 1, dtype=torch.int32),
             "feature_acts": torch.zeros(self.total_sampled_tokens, 2 * self.window_radius + 1, H),
         }, batch_size=[self.total_sampled_tokens, 2 * self.window_radius + 1])
 
-        for iter in range(n_batches):
-            print(f"Computing feature activations for batch # {iter+1}/{n_batches} in phase # {phase + 1}")
+        for iter in range(self.n_batches):
+            print(f"Computing feature activations for batch # {iter+1}/{self.n_batches} in phase # {phase + 1}")
             start_idx = iter * self.eval_batch_size
             end_idx = (iter + 1) * self.eval_batch_size
             x = X[start_idx:end_idx].to(self.device)
-            _, _ = self.gpt(x)
-            mlp_acts_BTF = self.gpt.mlp_activation_hooks[0]
-            self.gpt.clear_mlp_activation_hooks()
+            _, _ = self.transformer(x)
+            mlp_acts_BTF = self.transformer.mlp_activation_hooks[0]
+            self.transformer.clear_mlp_activation_hooks()
             feature_acts_BTH = self.autoencoder.get_feature_activations(inputs=mlp_acts_BTF, 
                                                                         start_idx=phase*H, 
                                                                         end_idx=(phase+1)*H)
@@ -141,8 +140,8 @@ class FeatureBrowser:
 
         return data
 
-    def process_phase(self, data, H, phase, n_features_per_phase, n_phases):
-        print(f'computing top k feature activations in phase # {phase + 1}/{n_phases}')
+    def process_phase(self, data, H, phase):
+        print(f'computing top k feature activations in phase # {phase + 1}/{self.n_phases}')
         _, topk_indices_kH = torch.topk(data["feature_acts"][:, self.window_radius, :], k=self.num_top_activations, dim=0)
         top_acts_data_kWH = TensorDict({
             "tokens": data["tokens"][topk_indices_kH].transpose(dim0=1, dim1=2),
@@ -150,14 +149,14 @@ class FeatureBrowser:
         }, batch_size=[self.num_top_activations, 2 * self.window_radius + 1, H])
 
         for h in range(H):
-            self.process_feature(data, H, phase, h, n_features_per_phase, top_acts_data_kWH)
+            self.process_feature(data, H, phase, h, top_acts_data_kWH)
 
-    def process_feature(self, data, H, phase, h, n_features_per_phase, top_acts_data_kWH):
+    def process_feature(self, data, H, phase, h, top_acts_data_kWH):
         curr_feature_acts_MW = data["feature_acts"][:, :, h]
         mid_token_feature_acts_M = curr_feature_acts_MW[:, self.window_radius]
         num_nonzero_acts = torch.count_nonzero(mid_token_feature_acts_M)
 
-        feature_id = phase * n_features_per_phase + h
+        feature_id = phase * self.n_features_per_phase + h
         if num_nonzero_acts == 0:
             write_dead_feature_page(feature_id=feature_id, dirpath=self.html_out)
             return
@@ -197,7 +196,8 @@ class FeatureBrowser:
                                  sampled_acts_data=sampled_acts_data_IXW,
                                  dirpath=self.html_out)
 
-    def select_context_windows(self, *args, num_sampled_tokens, window_radius, fn_seed=0):
+    @staticmethod
+    def select_context_windows(*args, num_sampled_tokens, window_radius, fn_seed=0):
         """
         Select windows of tokens around randomly sampled tokens from input tensors.
 
@@ -274,7 +274,7 @@ if __name__ == "__main__":
     )
 
     # Run the processing
-    feature_browser.make()
+    feature_browser.build()
 
 
 
