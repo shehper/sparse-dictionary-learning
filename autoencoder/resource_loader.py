@@ -6,7 +6,8 @@ import pickle
 import tiktoken
 
 # Extend the Python path to include the transformer subdirectory for GPT class import
-sys.path.insert(0, '../transformer')
+base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(base_dir, 'transformer'))
 from model import GPTConfig
 from hooked_model import HookedGPT
 
