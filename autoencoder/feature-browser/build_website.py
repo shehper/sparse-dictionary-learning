@@ -87,7 +87,7 @@ class FeatureBrowser:
 
         self.total_sampled_tokens = self.num_contexts * self.num_sampled_tokens  # Define total sampled tokens
 
-    def run(self):
+    def make(self):
         X, _ = self.resourceloader.get_text_batch(num_contexts=self.num_contexts)
         create_main_html_page(n_features=self.n_features, dirpath=self.html_out)
         
@@ -255,27 +255,26 @@ class FeatureBrowser:
 
         return result_tensors
 
-torch.manual_seed(seed)
-feature_processor = FeatureBrowser(
-    dataset=dataset, 
-    gpt_ckpt_dir=gpt_ckpt_dir,
-    device=device,
-    autoencoder_subdir=autoencoder_subdir,
-    num_contexts=num_contexts,
-    num_sampled_tokens=num_sampled_tokens,
-    window_radius=window_radius,
-    eval_batch_size=gpt_batch_size,
-    num_top_activations=num_top_activations,
-    num_intervals=num_intervals,
-    samples_per_interval=samples_per_interval,
-    seed=seed
-)
+if __name__ == "__main__":
 
-# Run the processing
-feature_processor.run()
+    torch.manual_seed(seed)
+    feature_browser = FeatureBrowser(
+        dataset=dataset, 
+        gpt_ckpt_dir=gpt_ckpt_dir,
+        device=device,
+        autoencoder_subdir=autoencoder_subdir,
+        num_contexts=num_contexts,
+        num_sampled_tokens=num_sampled_tokens,
+        window_radius=window_radius,
+        eval_batch_size=gpt_batch_size,
+        num_top_activations=num_top_activations,
+        num_intervals=num_intervals,
+        samples_per_interval=samples_per_interval,
+        seed=seed
+    )
 
-    # if phase == 1:
-    #     break
+    # Run the processing
+    feature_browser.make()
 
 
 
