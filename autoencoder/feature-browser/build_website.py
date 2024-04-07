@@ -178,8 +178,19 @@ class FeatureBrowser(ResourceLoader):
 
         return top_activations_data
 
-    def compute_top_logits(self):
-        pass
+    @torch.no_grad()
+    def compute_top_and_bottom_logits(self,):
+        """
+        Computes top and bottom logits for each feature. 
+        It uses the full LayerNorm instead of its approximation. # TODO: How important is that?
+        """
+        mlp_out = self.transformer.transformer.h[-1].mlp.c_proj(self.autoencoder.decoder.weight.detach().t()) # (L, C)
+        ln_out = self.transformer.transformer.ln_f(mlp_out) # (L, C)
+        logits = self.transformer.lm_head(ln_out) # (L, V)
+        shifted_logits = (logits - logits.median(dim=1, keepdim=True).values) # (L, V)
+        top_logits = torch.topk(shifted_logits, k=10, dim=1)
+        bottom_logits = torch.topk(-shifted_logits, k=10, dim=1)
+        return top_logits, bottom_logits
 
     def write_feature_page(self, phase, h, data, top_acts_data):
         """"Writes features pages for dead / alive neurons; also makes a histogram.
