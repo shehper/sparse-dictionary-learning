@@ -44,17 +44,11 @@ num_intervals = 12 # number of intervals to divide activations in; = 12 in Anthr
 samples_per_interval = 5 # number of examples to sample from each interval of activations 
 # evaluation hyperparameters
 gpt_batch_size = 156 
-num_features_per_phase = 20 # due to memory constraints, it's useful to process features in phases.
+num_phases = 52 # due to memory constraints, it's useful to process features in phases.
 # system
 device = 'cuda' # change it to cpu
 # reproducibility
 seed = 1442
-
-# -----------------------------------------------------------------------------
-config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
-exec(open('../configurator.py').read()) # overrides from command line or config file
-config = {k: globals()[k] for k in config_keys} # will be useful for logging
-# -----------------------------------------------------------------------------
 
 @dataclass
 class FeatureBrowserConfig:
@@ -73,7 +67,7 @@ class FeatureBrowserConfig:
     seed: int = 0
     device: str = "cpu"
     gpt_batch_size: int = 156
-    num_features_per_phase: int = 20
+    num_phases: int = 52
     
 class FeatureBrowser(ResourceLoader):
     def __init__(self, config):
@@ -97,12 +91,12 @@ class FeatureBrowser(ResourceLoader):
 
         self.gpt_batch_size = config.gpt_batch_size
         self.n_features = self.autoencoder.n_latents
-        self.num_phases = 52 # TODO: generalize it
+        self.num_phases = config.num_phases 
         self.num_features_per_phase = ceil(self.n_features / self.num_phases)
         self.num_batches = ceil(self.num_contexts / self.gpt_batch_size)
         
+        self.X, _ = self.get_text_batch(num_contexts=self.num_contexts) # sample text data for analysis
         self.encode, self.decode = self.load_tokenizer()
-        self.X, _ = self.get_text_batch(num_contexts=self.num_contexts)
         self.html_out = os.path.join(os.path.dirname(os.path.abspath('.')), 'out', config.dataset, str(config.sae_ckpt_dir))        
         self.seed = config.seed
 
@@ -183,6 +177,9 @@ class FeatureBrowser(ResourceLoader):
         }, batch_size=[self.num_top_activations, self.window_length, num_features]) # (k, W< H)
 
         return top_activations_data
+
+    def compute_top_logits(self):
+        pass
 
     def write_feature_page(self, phase, h, data, top_acts_data):
         """"Writes features pages for dead / alive neurons; also makes a histogram.
@@ -299,6 +296,13 @@ class FeatureBrowser(ResourceLoader):
         create_main_html_page(n_features=self.n_features, dirpath=self.html_out)
 
 if __name__ == "__main__":
+
+    # -----------------------------------------------------------------------------
+    config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
+    configurator = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'configurator.py')
+    exec(open(configurator).read()) # overrides from command line or config file
+    config = {k: globals()[k] for k in config_keys} # will be useful for logging
+    # -----------------------------------------------------------------------------
     
     torch.manual_seed(seed)
     config = FeatureBrowserConfig(**config)
@@ -309,3 +313,5 @@ if __name__ == "__main__":
 
  #TODO: tooltip css function should be imported separately and written explicitly I think, for clarity
  # TODO: methods that need to be revisited: write_feature_page, sample_and_write.
+ # TODO: make sure the last phase works out fine. 
+ # TODO: it would be nice if the final output does not depend on num_phases. Set seed for each feature separately?
