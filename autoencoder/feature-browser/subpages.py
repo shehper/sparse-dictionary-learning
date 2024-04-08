@@ -10,7 +10,7 @@ import os
 import torch
 from tensordict import TensorDict
 
-def write_feature_page_header(feature_id):
+def write_feature_page_header():
     header = f"""
     <!DOCTYPE html>
     <html lang="en">
@@ -28,9 +28,37 @@ def write_feature_page_header(feature_id):
             align-items: flex-start; /* Adjust this as needed */
             margin-top: 20px; /* Adjust space from the top */
         }}
-        .image-container {{
+        .image-container, .second-image-container {{
             flex: 1; /* Adjust as needed */
-            text-align: center; /* Center image */
+            text-align: center; /* Center image and below image text */
+        }}
+        .below-image-text {{
+        display: flex; /* Use Flexbox for the below image text */
+        }}
+        .column {{
+        flex: 1; /* Make each column take up equal space */
+        padding: 0 10px; /* Add some padding */
+        border: 2px solid #ccc;
+        background-color: #f9f9f9;
+        }}
+        h2 {{
+            margin-bottom: 15px;
+            color: #333; /* Dark grey color for text */
+        }}
+        .entry {{
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 5px;
+        }}
+        .entry .label {{
+            text-align: left;
+            flex: 1;
+            font-size: 20px;
+        }}
+        .entry .value {{
+            text-align: right;
+            flex: 0;
+            font-size: 20px;
         }}
         .text-container {{
             flex: 1; /* Adjust as needed */
@@ -47,7 +75,7 @@ def write_feature_page_header(feature_id):
 def write_dead_feature_page(feature_id, dirpath=None):
     html_content = []
     # add page_header to list of texts
-    html_content.append(write_feature_page_header(feature_id)) 
+    html_content.append(write_feature_page_header()) 
     # add dead neuron text
     html_content.append("""<span style="color:red;"> 
                             <h2>  Dead Neuron. </h2> 
@@ -105,7 +133,63 @@ def write_activations_section(decode, examples_data):
     return "".join(html_content)
         
         
-def write_alive_feature_page(feature_id, decode, top_acts_data, sampled_acts_data, dirpath=None):
+def include_feature_density_histogram(feature_id, dirpath=None):
+    if os.path.exists(os.path.join(dirpath, 'histograms', f'{feature_id}.png')):
+        feature_density_histogram = f"""
+            <div class="image-container">
+                <img src="../histograms/{feature_id}.png" alt="Feature Activations Histogram">
+            </div>"""
+        return feature_density_histogram
+    else:
+        return ""
+
+def include_logits_histogram(feature_id, dirpath=None):
+    # TODO: replace histograms with logits in the path below.
+    if os.path.exists(os.path.join(dirpath, 'histograms', f'{feature_id}.png')):
+        logits_histogram = f"""
+            <div class="second-image-container">
+                <img src="../histograms/{feature_id}.png" alt="Logits Histogram" width="100" height="50">
+            </div>
+            </div>
+            """
+        return logits_histogram
+    else:
+        return ""
+
+def include_top_and_bottom_logits(top_logits, bottom_logits, decode, feature_id):
+    # TODO: replace 10 with num_top_activations
+    logits_text = ["""<div class="below-image-text">"""]
+    logits_text.append("""<div class="column">""")
+    logits_text.append("""<h2 style="color:red;">Negative Logits</h2>""")
+    for i in range(10): 
+        token = decode([bottom_logits.indices[feature_id, i].tolist()])
+        token_html = token.replace('\n', '<span style="font-weight: normal;">&#x23CE;</span>')
+        logits_line = f"""<div class="entry">
+        <span class="label">
+            {token_html}
+        </span>
+        <span class="value">{bottom_logits.values[feature_id, i]:.4f}</span>
+        </div>"""
+        logits_text.append(logits_line)
+    logits_text.append("""</div>""")
+    
+    logits_text.append("""<div class="column">""")
+    logits_text.append("""<h2 style="color:green;">Positive Logits</h2>""")
+    for i in range(10): 
+        token = decode([top_logits.indices[feature_id, i].tolist()])
+        token_html = token.replace('\n', '<span style="font-weight: normal;">&#x23CE;</span>')
+        logits_line = f"""<div class="entry">
+        <span class="label">
+            {token_html}
+        </span>
+        <span class="value">{top_logits.values[feature_id, i]:.4f}</span>
+        </div>"""
+        logits_text.append(logits_line)
+    logits_text.append("""</div>""")
+    logits_text.append("""</div>""")
+    return "".join(logits_text)
+
+def write_alive_feature_page(feature_id, decode, top_logits, bottom_logits, top_acts_data, sampled_acts_data, dirpath=None):
 
     print(f'writing feature page for feature # {feature_id}')
     
@@ -122,18 +206,18 @@ def write_alive_feature_page(feature_id, decode, top_acts_data, sampled_acts_dat
     html_content = []
 
     # add page_header to the HTML page
-    html_content.append(write_feature_page_header(feature_id)) 
+    html_content.append(write_feature_page_header()) 
+    html_content.append("""<div class="content-container">
+                                <div>""")
 
-    # add histogram of feature activations
-    if os.path.exists(os.path.join(dirpath, 'histograms', f'{feature_id}.png')):
-        html_content.append(f"""<div class="content-container">
-        <div class="image-container">
-            <img src="../histograms/{feature_id}.png" alt="Feature Activations Histogram">
-        </div>""")
+    # add histogram of feature activations, top and bottom logits and logits histogram    
+    html_content.append(include_feature_density_histogram(feature_id, dirpath=dirpath))
+    html_content.append(include_top_and_bottom_logits(top_logits, bottom_logits, decode, feature_id))
+    html_content.append(include_logits_histogram(feature_id, dirpath=dirpath))
 
     # add feature #, and the information that it is an ultralow density neuron
     html_content.append(f"""<div class="text-container">
-        <h2 style="color:blue;">Neuron # {feature_id}</h2> """)
+        <h2 style="color:blue;">Neuron # {feature_id}</h2>""")
 
     # include a section on top activations
     html_content.append("""
@@ -168,7 +252,7 @@ def write_ultralow_density_feature_page(feature_id, decode, top_acts_data, dirpa
     html_content = []
 
     # add page_header to the HTML page
-    html_content.append(write_feature_page_header(feature_id)) 
+    html_content.append(write_feature_page_header()) 
 
     # add histogram of feature activations
     if os.path.exists(os.path.join(dirpath, 'histograms', f'{feature_id}.png')):
