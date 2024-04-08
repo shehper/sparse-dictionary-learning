@@ -11,6 +11,8 @@ H: Number of features being processed in a phase
 N: total_sampled_tokens = (num_contexts * num_sampled_tokens)
 T: block_size (same as nanoGPT)
 B: gpt_batch_size (same as nanoGPT)
+C: n_embd a.k.a d_model (same as nanoGPT)
+V: vocab_size
 SI: samples_per_interval
 
 Run on a Macbook as
@@ -100,6 +102,8 @@ class FeatureBrowser(ResourceLoader):
         self.html_out = os.path.join(os.path.dirname(os.path.abspath('.')), 'out', config.dataset, str(config.sae_ckpt_dir))        
         self.seed = config.seed
 
+        self.top_logits, self.bottom_logits = self.compute_top_and_bottom_logits()
+
         print(f"Will process features in {self.num_phases} phases. Each phase will have forward pass in {self.num_batches} batches")
 
     def build(self):
@@ -112,6 +116,7 @@ class FeatureBrowser(ResourceLoader):
         """
         self.write_main_page() 
 
+
         for phase in range(self.num_phases):
             feature_start_idx = phase * self.num_features_per_phase
             feature_end_idx = (phase + 1) * self.num_features_per_phase
@@ -121,7 +126,7 @@ class FeatureBrowser(ResourceLoader):
             for h in range(0, feature_end_idx-feature_start_idx):
                 self.write_feature_page(phase, h, context_window_data, top_acts_data)
 
-            if phase == 1:
+            if phase == 0:
                 print(f'stored new feature browser pages in {self.html_out}')
                 break
 
@@ -182,15 +187,17 @@ class FeatureBrowser(ResourceLoader):
     def compute_top_and_bottom_logits(self,):
         """
         Computes top and bottom logits for each feature. 
+        Returns (top_logits, bottom_logits). Each is of type `torch.return_types.topk`.
         It uses the full LayerNorm instead of its approximation. # TODO: How important is that?
+        # TODO: also, this function is specific to SAEs trained on the activations of last MLP layer for now.
         """
         mlp_out = self.transformer.transformer.h[-1].mlp.c_proj(self.autoencoder.decoder.weight.detach().t()) # (L, C)
         ln_out = self.transformer.transformer.ln_f(mlp_out) # (L, C)
         logits = self.transformer.lm_head(ln_out) # (L, V)
         shifted_logits = (logits - logits.median(dim=1, keepdim=True).values) # (L, V)
-        top_logits = torch.topk(shifted_logits, k=10, dim=1)
-        bottom_logits = torch.topk(-shifted_logits, k=10, dim=1)
-        return top_logits, bottom_logits
+        top_logits = torch.topk(shifted_logits, k=self.num_top_activations, dim=1) # (L, k)
+        bottom_logits = torch.topk(-shifted_logits, k=self.num_top_activations, dim=1) # (L, k)
+        return top_logits, bottom_logits 
 
     def write_feature_page(self, phase, h, data, top_acts_data):
         """"Writes features pages for dead / alive neurons; also makes a histogram.
@@ -235,6 +242,8 @@ class FeatureBrowser(ResourceLoader):
 
         write_alive_feature_page(feature_id=feature_id, 
                                  decode=self.decode,
+                                 top_logits=self.top_logits,
+                                 bottom_logits=self.bottom_logits,
                                  top_acts_data=top_acts_data[:, :, h],
                                  sampled_acts_data=sampled_acts_data,
                                  dirpath=self.html_out)
@@ -322,7 +331,7 @@ if __name__ == "__main__":
     feature_browser.build()
 
 
- #TODO: tooltip css function should be imported separately and written explicitly I think, for clarity
+ # TODO: tooltip css function should be imported separately and written explicitly I think, for clarity
  # TODO: methods that need to be revisited: write_feature_page, sample_and_write.
  # TODO: make sure the last phase works out fine. 
  # TODO: it would be nice if the final output does not depend on num_phases. Set seed for each feature separately?
