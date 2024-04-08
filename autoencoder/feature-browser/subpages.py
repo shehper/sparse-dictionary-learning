@@ -160,7 +160,7 @@ def include_top_and_bottom_logits(top_logits, bottom_logits, decode, feature_id)
     # TODO: replace 10 with num_top_activations
     logits_text = ["""<div class="below-image-text">"""]
     logits_text.append("""<div class="column">""")
-    logits_text.append("""<h2 style="color:red;">Negative Logits</h2>""")
+    logits_text.append("""<h3 style="color:red;">Negative Logits</h3>""")
     for i in range(10): 
         token = decode([bottom_logits.indices[feature_id, i].tolist()])
         token_html = token.replace('\n', '<span style="font-weight: normal;">&#x23CE;</span>')
@@ -174,7 +174,7 @@ def include_top_and_bottom_logits(top_logits, bottom_logits, decode, feature_id)
     logits_text.append("""</div>""")
     
     logits_text.append("""<div class="column">""")
-    logits_text.append("""<h2 style="color:green;">Positive Logits</h2>""")
+    logits_text.append("""<h3 style="color:green;">Positive Logits</h3>""")
     for i in range(10): 
         token = decode([top_logits.indices[feature_id, i].tolist()])
         token_html = token.replace('\n', '<span style="font-weight: normal;">&#x23CE;</span>')
