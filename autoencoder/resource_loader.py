@@ -34,15 +34,15 @@ class ResourceLoader:
         self.transformer = self.load_transformer_model()
         self.n_ffwd = self.transformer.config.n_embd * 4
 
-        if mode in ["train", "eval"]:
+        if mode == "train":
             self.autoencoder_data_dir = os.path.join(self.base_dir, 'autoencoder', 'data', self.dataset, str(self.n_ffwd))
             self.autoencoder_data = self.load_next_autoencoder_partition(partition_id=0)
             self.autoencoder_data_info = self.init_autoencoder_data_info()
             
-            if mode == "eval":
-                assert sae_ckpt_dir, "A path to autoencoder checkpoint must be given"
-                self.sae_ckpt_dir = sae_ckpt_dir
-                self.autoencoder = self.load_autoencoder_model()
+        if mode == "eval":
+            assert sae_ckpt_dir, "A path to autoencoder checkpoint must be given"
+            self.sae_ckpt_dir = sae_ckpt_dir
+            self.autoencoder = self.load_autoencoder_model()
         
     def load_text_data(self):
         """Loads the text data from the specified dataset."""
