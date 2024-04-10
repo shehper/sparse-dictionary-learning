@@ -126,9 +126,9 @@ class FeatureBrowser(ResourceLoader):
             for h in range(0, feature_end_idx-feature_start_idx):
                 self.write_feature_page(phase, h, context_window_data, top_acts_data)
 
-            if phase == 0:
-                print(f'stored new feature browser pages in {self.html_out}')
-                break
+            # if phase == 1:
+            #     print(f'stored new feature browser pages in {self.html_out}')
+            #     break
 
     def compute_context_window_data(self, feature_start_idx, feature_end_idx):
         """Compute data of tokens and feature activations for all context windows. 
@@ -190,13 +190,14 @@ class FeatureBrowser(ResourceLoader):
         Returns (top_logits, bottom_logits). Each is of type `torch.return_types.topk`.
         It uses the full LayerNorm instead of its approximation. # TODO: How important is that?
         # TODO: also, this function is specific to SAEs trained on the activations of last MLP layer for now.
+        In general, this could be done by ablating residual stream to zero and 
         """
         mlp_out = self.transformer.transformer.h[-1].mlp.c_proj(self.autoencoder.decoder.weight.detach().t()) # (L, C)
         ln_out = self.transformer.transformer.ln_f(mlp_out) # (L, C)
         logits = self.transformer.lm_head(ln_out) # (L, V)
         shifted_logits = (logits - logits.median(dim=1, keepdim=True).values) # (L, V)
-        top_logits = torch.topk(shifted_logits, k=self.num_top_activations, dim=1) # (L, k)
-        bottom_logits = torch.topk(-shifted_logits, k=self.num_top_activations, dim=1) # (L, k)
+        top_logits = torch.topk(shifted_logits, largest=True, k=self.num_top_activations, dim=1) # (L, k)
+        bottom_logits = torch.topk(shifted_logits, largest=False, k=self.num_top_activations, dim=1) # (L, k)
         return top_logits, bottom_logits 
 
     def write_feature_page(self, phase, h, data, top_acts_data):
@@ -335,3 +336,4 @@ if __name__ == "__main__":
  # TODO: methods that need to be revisited: write_feature_page, sample_and_write.
  # TODO: make sure the last phase works out fine. 
  # TODO: it would be nice if the final output does not depend on num_phases. Set seed for each feature separately?
+ # TODO: we don't really need autoencoder data in eval mode. Change this in resourceloader. 
