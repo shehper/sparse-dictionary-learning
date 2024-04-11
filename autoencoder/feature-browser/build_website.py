@@ -196,8 +196,15 @@ class FeatureBrowser(ResourceLoader):
         ln_out = self.transformer.transformer.ln_f(mlp_out) # (L, C)
         logits = self.transformer.lm_head(ln_out) # (L, V)
         shifted_logits = (logits - logits.median(dim=1, keepdim=True).values) # (L, V)
-        top_logits = torch.topk(shifted_logits, largest=True, k=self.num_top_activations, dim=1) # (L, k)
-        bottom_logits = torch.topk(shifted_logits, largest=False, k=self.num_top_activations, dim=1) # (L, k)
+
+        # GPT-2 tokenizer has vocab size 50257. nanoGPT sets vocab size = 50304 for higher training speed.
+        # See https://twitter.com/karpathy/status/1621578354024677377?lang=en
+        # Decoder will give an error if a token with id > 50256 is given, and bottom_logits may pick one of these tokens. 
+        # Therefore, set max token id to 50256 by hand. 
+        shifted_logits = shifted_logits[:, :50257]
+
+        top_logits = torch.topk(shifted_logits, largest=True, sorted=True, k=self.num_top_activations, dim=1) # (L, k)
+        bottom_logits = torch.topk(shifted_logits, largest=False, sorted=True, k=self.num_top_activations, dim=1) # (L, k)
         return top_logits, bottom_logits 
 
     def write_feature_page(self, phase, h, data, top_acts_data):
