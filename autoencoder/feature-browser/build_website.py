@@ -119,7 +119,7 @@ class FeatureBrowser(ResourceLoader):
 
         for phase in range(self.num_phases):
             feature_start_idx = phase * self.num_features_per_phase
-            feature_end_idx = (phase + 1) * self.num_features_per_phase
+            feature_end_idx = min((phase + 1) * self.num_features_per_phase, self.n_features)
             print(f'working on features # {feature_start_idx} - {feature_end_idx} in phase {phase + 1}/{self.num_phases}')
             context_window_data = self.compute_context_window_data(feature_start_idx, feature_end_idx)
             top_acts_data = self.compute_top_activations(context_window_data)
@@ -189,8 +189,7 @@ class FeatureBrowser(ResourceLoader):
         Computes top and bottom logits for each feature. 
         Returns (top_logits, bottom_logits). Each is of type `torch.return_types.topk`.
         It uses the full LayerNorm instead of its approximation. # TODO: How important is that?
-        # TODO: also, this function is specific to SAEs trained on the activations of last MLP layer for now.
-        In general, this could be done by ablating residual stream to zero and 
+        # also, this function is specific to SAEs trained on the activations of last MLP layer for now.
         """
         mlp_out = self.transformer.transformer.h[-1].mlp.c_proj(self.autoencoder.decoder.weight.detach().t()) # (L, C)
         ln_out = self.transformer.transformer.ln_f(mlp_out) # (L, C)
@@ -341,6 +340,5 @@ if __name__ == "__main__":
 
  # TODO: tooltip css function should be imported separately and written explicitly I think, for clarity
  # TODO: methods that need to be revisited: write_feature_page, sample_and_write.
- # TODO: make sure the last phase works out fine. 
  # TODO: it would be nice if the final output does not depend on num_phases. Set seed for each feature separately?
  # TODO: we don't really need autoencoder data in eval mode. Change this in resourceloader. 
