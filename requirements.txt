@@ -25,7 +25,7 @@ fsspec==2023.10.0
 gitdb==4.0.11
 GitPython==3.1.41
 huggingface-hub==0.20.2
-idna==3.6
+idna==3.7
 importlib-metadata==7.0.0
 importlib-resources==6.1.1
 ipykernel==6.27.1
