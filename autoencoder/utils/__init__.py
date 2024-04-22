@@ -1,1 +1,1 @@
-from .plotting_utils import make_histogram_image
+from .plotting_utils import make_density_histogram, make_activations_histogram, make_logits_histogram

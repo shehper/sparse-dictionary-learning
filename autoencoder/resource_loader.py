@@ -43,6 +43,7 @@ class ResourceLoader:
             assert sae_ckpt_dir, "A path to autoencoder checkpoint must be given"
             self.sae_ckpt_dir = sae_ckpt_dir
             self.autoencoder = self.load_autoencoder_model()
+            self.autoencoder.eval() # note that if we load an autoencoder to resume training, we must not do this
         
     def load_text_data(self):
         """Loads the text data from the specified dataset."""

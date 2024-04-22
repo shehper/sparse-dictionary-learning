@@ -30,7 +30,7 @@ from subpages import write_alive_feature_page, write_dead_feature_page, write_ul
 
 sys.path.insert(1, '../')
 from resource_loader import ResourceLoader
-from utils.plotting_utils import make_histogram
+from utils.plotting_utils import make_activations_histogram, make_logits_histogram
 
 # hyperparameters 
 # data and model
@@ -102,6 +102,15 @@ class FeatureBrowser(ResourceLoader):
         self.html_out = os.path.join(os.path.dirname(os.path.abspath('.')), 'out', config.dataset, str(config.sae_ckpt_dir))        
         self.seed = config.seed
 
+        # create subdirectories to store logit histograms and feature activation histograms
+        os.makedirs(os.path.join(self.html_out, 'logits_histograms'), exist_ok=True)
+        os.makedirs(os.path.join(self.html_out, 'activations_histograms'), exist_ok=True)
+
+        # TODO: why are my logits of the order of 10, while Anthropic's are <1. Do they rescale them? 
+        # Or is it because of linear approximation to LayerNorm?
+
+        # self.attributed logits is a tensor of shape (n_features, vocab_size) containing logits for each feature
+        self.attributed_logits = self.compute_logits()
         self.top_logits, self.bottom_logits = self.compute_top_and_bottom_logits()
 
         print(f"Will process features in {self.num_phases} phases. Each phase will have forward pass in {self.num_batches} batches")
@@ -124,6 +133,12 @@ class FeatureBrowser(ResourceLoader):
             context_window_data = self.compute_context_window_data(feature_start_idx, feature_end_idx)
             top_acts_data = self.compute_top_activations(context_window_data)
             for h in range(0, feature_end_idx-feature_start_idx):
+                # make and save histogram of logits for this feature        
+                feature_id = phase * self.num_features_per_phase + h
+                make_logits_histogram(logits=self.attributed_logits[feature_id, :],
+                                    feature_id=feature_id,
+                                    dirpath=self.html_out)
+                # write the page for this feature
                 self.write_feature_page(phase, h, context_window_data, top_acts_data)
 
             # if phase == 1:
@@ -184,31 +199,39 @@ class FeatureBrowser(ResourceLoader):
         return top_activations_data
 
     @torch.no_grad()
-    def compute_top_and_bottom_logits(self,):
+    def compute_logits(self,):
         """
-        Computes top and bottom logits for each feature. 
-        Returns (top_logits, bottom_logits). Each is of type `torch.return_types.topk`.
-        It uses the full LayerNorm instead of its approximation. # TODO: How important is that?
-        # also, this function is specific to SAEs trained on the activations of last MLP layer for now.
+        Computes logits for each feature through path expansion approach.
+        Returns a torch tensor of shape (num_features, vocab_size)
+        By default, it uses full LayerNorm instead of its linear approximation. # TODO: understand if that's okay
+        # also, this function is specific to SAEs trained on the activations of last MLP layer for now. TODO: generalize this
+        By default, logits for each feature are shifted so that the median value is 0.
         """
         mlp_out = self.transformer.transformer.h[-1].mlp.c_proj(self.autoencoder.decoder.weight.detach().t()) # (L, C)
         ln_out = self.transformer.transformer.ln_f(mlp_out) # (L, C)
         logits = self.transformer.lm_head(ln_out) # (L, V)
-        shifted_logits = (logits - logits.median(dim=1, keepdim=True).values) # (L, V)
-
+        attributed_logits = (logits - logits.median(dim=1, keepdim=True).values) # (L, V)
+        return attributed_logits
+    
+    @torch.no_grad()
+    def compute_top_and_bottom_logits(self,):
+        """
+        Computes top and bottom logits for each feature. 
+        Returns (top_logits, bottom_logits). Each is of type `torch.return_types.topk`.
+        """
         # GPT-2 tokenizer has vocab size 50257. nanoGPT sets vocab size = 50304 for higher training speed.
         # See https://twitter.com/karpathy/status/1621578354024677377?lang=en
         # Decoder will give an error if a token with id > 50256 is given, and bottom_logits may pick one of these tokens. 
         # Therefore, set max token id to 50256 by hand. 
-        shifted_logits = shifted_logits[:, :50257]
-
-        top_logits = torch.topk(shifted_logits, largest=True, sorted=True, k=self.num_top_activations, dim=1) # (L, k)
-        bottom_logits = torch.topk(shifted_logits, largest=False, sorted=True, k=self.num_top_activations, dim=1) # (L, k)
+        attributed_logits = self.attributed_logits[:, :50257]
+        top_logits = torch.topk(attributed_logits, largest=True, sorted=True, k=self.num_top_activations, dim=1) # (L, k)
+        bottom_logits = torch.topk(attributed_logits, largest=False, sorted=True, k=self.num_top_activations, dim=1) # (L, k)
         return top_logits, bottom_logits 
 
     def write_feature_page(self, phase, h, data, top_acts_data):
         """"Writes features pages for dead / alive neurons; also makes a histogram.
         For alive features, it calls sample_and_write."""
+
         curr_feature_acts_MW = data["feature_acts"][:, :, h]
         mid_token_feature_acts_M = curr_feature_acts_MW[:, self.window_radius]
         num_nonzero_acts = torch.count_nonzero(mid_token_feature_acts_M)
@@ -220,10 +243,11 @@ class FeatureBrowser(ResourceLoader):
         
         act_density = torch.count_nonzero(curr_feature_acts_MW) / (self.total_sampled_tokens * self.window_length) * 100
         non_zero_acts = curr_feature_acts_MW[curr_feature_acts_MW != 0]
-        make_histogram(activations=non_zero_acts, 
+        make_activations_histogram(activations=non_zero_acts, 
                        density=act_density, 
                        feature_id=feature_id,
                        dirpath=self.html_out)
+
 
         if num_nonzero_acts < self.num_intervals * self.samples_per_interval:
             write_ultralow_density_feature_page(feature_id=feature_id, 

@@ -10,7 +10,7 @@ import numpy as np
 import time
 from autoencoder import AutoEncoder
 from resource_loader import ResourceLoader
-from utils.plotting_utils import make_histogram_image
+from utils.plotting_utils import make_density_histogram
 
 ## hyperparameters
 # dataset and model
@@ -155,7 +155,7 @@ for step in range(num_steps):
 
         # compute feature densities and plot feature density histogram
         log_feat_acts_density = np.log10(feat_acts_count[feat_acts_count != 0]/(eval_iters * eval_batch_size * gpt.config.block_size)) # (n_features,)
-        feat_density_historgram = make_histogram_image(log_feat_acts_density)
+        feat_density_historgram = make_density_histogram(log_feat_acts_density)
 
         # take mean of all loss values by dividing by the number of evaluation batches; also log more metrics
         log_dict = {key: val/eval_iters for key, val in log_dict.items()}

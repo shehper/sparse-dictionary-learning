@@ -39,7 +39,7 @@ def write_feature_page_header():
         flex: 1; /* Make each column take up equal space */
         padding: 0 10px; /* Add some padding */
         border: 2px solid #ccc;
-        background-color: #f9f9f9;
+        background-color: #ffffff;
         }}
         h2 {{
             margin-bottom: 15px;
@@ -134,21 +134,20 @@ def write_activations_section(decode, examples_data):
         
         
 def include_feature_density_histogram(feature_id, dirpath=None):
-    if os.path.exists(os.path.join(dirpath, 'histograms', f'{feature_id}.png')):
+    if os.path.exists(os.path.join(dirpath, 'activations_histograms', f'{feature_id}.png')):
         feature_density_histogram = f"""
             <div class="image-container">
-                <img src="../histograms/{feature_id}.png" alt="Feature Activations Histogram">
+                <img src="../activations_histograms/{feature_id}.png" alt="Feature Activations Histogram">
             </div>"""
         return feature_density_histogram
     else:
         return ""
 
 def include_logits_histogram(feature_id, dirpath=None):
-    # TODO: replace histograms with logits in the path below.
-    if os.path.exists(os.path.join(dirpath, 'histograms', f'{feature_id}.png')):
+    if os.path.exists(os.path.join(dirpath, 'logits_histograms', f'{feature_id}.png')):
         logits_histogram = f"""
             <div class="second-image-container">
-                <img src="../histograms/{feature_id}.png" alt="Logits Histogram" width="100" height="50">
+                <img src="../logits_histograms/{feature_id}.png" alt="Logits Histogram" width="400" height="200">
             </div>
             </div>
             """
@@ -255,10 +254,10 @@ def write_ultralow_density_feature_page(feature_id, decode, top_acts_data, dirpa
     html_content.append(write_feature_page_header()) 
 
     # add histogram of feature activations
-    if os.path.exists(os.path.join(dirpath, 'histograms', f'{feature_id}.png')):
+    if os.path.exists(os.path.join(dirpath, 'activations_histograms', f'{feature_id}.png')):
         html_content.append(f"""<div class="content-container">
         <div class="image-container">
-            <img src="../histograms/{feature_id}.png" alt="Feature Activations Histogram">
+            <img src="../activations_histograms/{feature_id}.png" alt="Feature Activations Histogram">
         </div>""")
 
     # add feature #, and the information that it is an ultralow density neuron
