@@ -48,7 +48,7 @@ def make_logits_histogram(logits, feature_id, dirpath=None):
         feature_id: int 
         dirpath: histogram is saved as dirpath/logits_histograms/feature_id.png
     """
-    plt.hist(logits, bins='auto')  # You can adjust the number of bins as needed
+    plt.hist(logits.cpu().numpy(), bins='auto')  # You can adjust the number of bins as needed
 
     image_path = os.path.join(dirpath, 'logits_histograms', f'{feature_id}.png')
     plt.savefig(image_path)
