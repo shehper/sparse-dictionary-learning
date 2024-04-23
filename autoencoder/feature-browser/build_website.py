@@ -97,7 +97,7 @@ class FeatureBrowser(ResourceLoader):
         self.num_features_per_phase = ceil(self.n_features / self.num_phases)
         self.num_batches = ceil(self.num_contexts / self.gpt_batch_size)
         
-        self.X, _ = self.get_text_batch(num_contexts=self.num_contexts) # sample text data for analysis
+        self.X, self.Y = self.get_text_batch(num_contexts=self.num_contexts) # sample text data for analysis # (B, T)
         self.encode, self.decode = self.load_tokenizer()
         self.html_out = os.path.join(os.path.dirname(os.path.abspath('.')), 'out', config.dataset, str(config.sae_ckpt_dir))        
         self.seed = config.seed
@@ -114,6 +114,10 @@ class FeatureBrowser(ResourceLoader):
         self.top_logits, self.bottom_logits = self.compute_top_and_bottom_logits()
 
         print(f"Will process features in {self.num_phases} phases. Each phase will have forward pass in {self.num_batches} batches")
+
+        # TODO: actually, a lot more information may be initialized here.
+        # e.g. context window data, perhaps current phase, which feature is being processed, top activations data for that feature, etc.
+        # That way, I will not have to pass so many variables to each method.
 
     def build(self):
         """
@@ -155,19 +159,21 @@ class FeatureBrowser(ResourceLoader):
                 print(f"computing feature activations for batches {iter+1}-{min(iter+20, self.num_batches)}/{self.num_batches}")
             batch_start_idx = iter * self.gpt_batch_size
             batch_end_idx = (iter + 1) * self.gpt_batch_size
-            x, feature_activations = self._compute_batch_feature_activations(batch_start_idx, 
+            x, feature_activations, logits_difference_storage = self._compute_batch_feature_activations(batch_start_idx, 
                                                                              batch_end_idx, 
                                                                              feature_start_idx, 
                                                                              feature_end_idx)
-            # x: (B, T), # feature_activations: (B, T, H)
-            x_context_windows, feature_acts_context_windows = self._sample_context_windows( x, 
+            # x: (B, T), # feature_activations: (B, T, H), # feature_ablations: (B, T, 4C, H)
+            x_context_windows, feature_acts_context_windows, logits_difference_context_window = self._sample_context_windows( x, 
                                                                                             feature_activations,  
+                                                                                            logits_difference_storage,
                                                                                             fn_seed=self.seed+iter)
             # context_window_tokens: (B * S, W), context_window_feature_acts: (B * S, W, H)
             idx_start = batch_start_idx * self.num_sampled_tokens
             idx_end = batch_end_idx * self.num_sampled_tokens
             context_window_data["tokens"][idx_start:idx_end] = x_context_windows
             context_window_data["feature_acts"][idx_start:idx_end] = feature_acts_context_windows
+            context_window_data["logits_diff"][idx_start:idx_end] = feature_acts_context_windows
 
         return context_window_data
 
@@ -249,6 +255,7 @@ class FeatureBrowser(ResourceLoader):
                        dirpath=self.html_out)
 
 
+        # TODO: for ultralow density and other alive neurons, I will need to give feature ablation data
         if num_nonzero_acts < self.num_intervals * self.samples_per_interval:
             write_ultralow_density_feature_page(feature_id=feature_id, 
                                                 decode=self.decode,
@@ -328,20 +335,39 @@ class FeatureBrowser(ResourceLoader):
         context_window_data = TensorDict({
             "tokens": torch.zeros(self.total_sampled_tokens, self.window_length, dtype=torch.int32),
             "feature_acts": torch.zeros(self.total_sampled_tokens, self.window_length, num_features_in_phase),
+            "logits_diff": torch.zeros(self.total_sampled_tokens, self.window_length, num_features_in_phase),
         }, batch_size=[self.total_sampled_tokens, self.window_length]) # (N * S, W)
         return context_window_data
 
+    @torch.no_grad()
     def _compute_batch_feature_activations(self, batch_start_idx, batch_end_idx, feature_start_idx, feature_end_idx):
         """Computes feature activations for given batch of input text.
         """
         x = self.X[batch_start_idx:batch_end_idx].to(self.device)
-        _, _ = self.transformer(x)
+        y = self.Y[batch_start_idx:batch_end_idx].to(self.device)
+        B, T = x.shape
+        H = feature_end_idx - feature_start_idx # number of features in this phase
+        original_logits, _ = self.transformer(x, y) # original_logits.shape = (B, T, V)
         mlp_acts = self.transformer.mlp_activation_hooks[0] # (B, T, 4C)
         self.transformer.clear_mlp_activation_hooks()
         feature_activations = self.autoencoder.get_feature_activations(inputs=mlp_acts, 
                                                                     start_idx=feature_start_idx, 
                                                                     end_idx=feature_end_idx) # (B, T, H)
-        return x, feature_activations
+
+        dictionary_vectors = self.autoencoder.decoder.weight[:, feature_start_idx:feature_end_idx] # (4C, H)
+        feature_projections = feature_activations.unsqueeze(2) * dictionary_vectors # (B, T, 4C, H)
+        feature_ablations =  mlp_acts.unsqueeze(-1) - feature_projections # (B, T, 4C, H)
+
+        logits_difference_storage = torch.zeros(B, T, H, device=self.device) # (B, T, H)
+        for h in range(H):
+            feat_ablation_logits, _ = self.gpt(x, y, mode="replace", replacement_tensor=feature_ablations[:, :, :, h]) # (B, T, V)
+
+            logits_difference = original_logits - feat_ablation_logits # (B, T, V)
+
+            # restrict logits difference to those for the next token
+            logits_difference_storage[:, :, h] = logits_difference[torch.arange(B)[:, None], torch.arange(T), y] # (B, T)
+
+        return x, feature_activations, logits_difference_storage
 
     def write_main_page(self):
         create_main_html_page(n_features=self.n_features, dirpath=self.html_out)
