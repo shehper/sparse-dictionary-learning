@@ -118,6 +118,7 @@ class FeatureBrowser(ResourceLoader):
         # TODO: actually, a lot more information may be initialized here.
         # e.g. context window data, perhaps current phase, which feature is being processed, top activations data for that feature, etc.
         # That way, I will not have to pass so many variables to each method.
+        # can also have top_acts_data here and sampled_intervals data
 
     def build(self):
         """
@@ -145,7 +146,7 @@ class FeatureBrowser(ResourceLoader):
                 # write the page for this feature
                 self.write_feature_page(phase, h, context_window_data, top_acts_data)
 
-            # if phase == 1:
+            # if phase == 0:
             #     print(f'stored new feature browser pages in {self.html_out}')
             #     break
 
@@ -163,17 +164,18 @@ class FeatureBrowser(ResourceLoader):
                                                                              batch_end_idx, 
                                                                              feature_start_idx, 
                                                                              feature_end_idx)
-            # x: (B, T), # feature_activations: (B, T, H), # feature_ablations: (B, T, 4C, H)
+            # x: (B, T), # feature_activations: (B, T, H), # logits_difference_storage: (B, T, H)
             x_context_windows, feature_acts_context_windows, logits_difference_context_window = self._sample_context_windows( x, 
                                                                                             feature_activations,  
                                                                                             logits_difference_storage,
                                                                                             fn_seed=self.seed+iter)
-            # context_window_tokens: (B * S, W), context_window_feature_acts: (B * S, W, H)
+            # context_window_tokens: (B * S, W), context_window_feature_acts: (B * S, W, H), 
+            # logits_difference_context_window: (B * S, W, H)
             idx_start = batch_start_idx * self.num_sampled_tokens
             idx_end = batch_end_idx * self.num_sampled_tokens
             context_window_data["tokens"][idx_start:idx_end] = x_context_windows
             context_window_data["feature_acts"][idx_start:idx_end] = feature_acts_context_windows
-            context_window_data["logits_diff"][idx_start:idx_end] = feature_acts_context_windows
+            context_window_data["logits_diff"][idx_start:idx_end] = logits_difference_context_window
 
         return context_window_data
 
@@ -188,19 +190,25 @@ class FeatureBrowser(ResourceLoader):
                                     k=self.num_top_activations, dim=0)  # (k, H)
 
         # Prepare the tokens corresponding to the top activations
-        top_tokens = data["tokens"][top_indices].transpose(dim0=1, dim1=2) # (k, W, H)
+        tokens_with_top_acts = data["tokens"][top_indices].transpose(dim0=1, dim1=2) # (k, W, H)
 
         # Extract and stack the top feature activations for each feature across all windows
         top_feature_activations = torch.stack(
-            [data["feature_acts"][top_indices[:, i], :, i] for i in range(num_features)],
-            dim=-1 
-        ) # (k, W, H)
+                            [data["feature_acts"][top_indices[:, i], :, i] for i in range(num_features)],
+                            dim=-1 
+                        ) # (k, W, H)
+
+        logits_diff_for_top_acts = torch.stack(
+                            [data["logits_diff"][top_indices[:, i], :, i] for i in range(num_features)],
+                            dim=-1 
+                            ) # (k, W, H)
 
         # Bundle the top tokens and feature activations into a structured data format
         top_activations_data = TensorDict({
-            "tokens": top_tokens,
-            "feature_acts": top_feature_activations
-        }, batch_size=[self.num_top_activations, self.window_length, num_features]) # (k, W< H)
+            "tokens": tokens_with_top_acts,
+            "feature_acts": top_feature_activations,
+            "logits_diff": logits_diff_for_top_acts,
+        }, batch_size=[self.num_top_activations, self.window_length, num_features]) # (k, W, H)
 
         return top_activations_data
 
@@ -276,6 +284,7 @@ class FeatureBrowser(ResourceLoader):
         sampled_acts_data = TensorDict({
             "tokens": data["tokens"][original_indices], 
             "feature_acts": curr_feature_acts_MW[original_indices],
+            "logits_diff": curr_feature_acts_MW[original_indices],
         }, batch_size=[self.num_intervals, self.samples_per_interval, self.window_length]) # (I, SI, W)
 
         write_alive_feature_page(feature_id=feature_id, 
@@ -358,9 +367,11 @@ class FeatureBrowser(ResourceLoader):
         feature_projections = feature_activations.unsqueeze(2) * dictionary_vectors # (B, T, 4C, H)
         feature_ablations =  mlp_acts.unsqueeze(-1) - feature_projections # (B, T, 4C, H)
 
+        # TODO: do I need to center the median at 0 before computing differences? 
+        # Otherwise, the probability of sampling the token can probably not be compared through the logit weight alone.
         logits_difference_storage = torch.zeros(B, T, H, device=self.device) # (B, T, H)
         for h in range(H):
-            feat_ablation_logits, _ = self.gpt(x, y, mode="replace", replacement_tensor=feature_ablations[:, :, :, h]) # (B, T, V)
+            feat_ablation_logits, _ = self.transformer(x, y, mode="replace", replacement_tensor=feature_ablations[:, :, :, h]) # (B, T, V)
 
             logits_difference = original_logits - feat_ablation_logits # (B, T, V)
 
