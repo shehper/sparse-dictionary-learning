@@ -43,8 +43,6 @@ I collected the dataset of 4B MLP activations by performing forward pass on 20M 
 For the most part, I followed the training procedure described in the [appendix](https://transformer-circuits.pub/2023/monosemantic-features#appendix-autoencoder) of Anthropic's original paper. I did not follow the improvements they suggested in their [January](https://transformer-circuits.pub/2024/jan-update/index.html) and [February](https://transformer-circuits.pub/2024/feb-update/index.html) updates. 
 
 ### TODOs
-- Make the transformer and autoencoder weights available on HuggingFace along with a demo on how to use them.
-- Make the code easy to import and work with for any interested researchers. 
 - Incorporate the effects of feature ablations in the feature interface. 
 - Implement an interface to see "Feature Activations on Example Texts" as done by Anthropic [here](https://transformer-circuits.pub/2023/monosemantic-features/vis/a1-math.html).
 - Modify the code so that one can train a sparse autoencoder on activations of any MLP / attention layer.
