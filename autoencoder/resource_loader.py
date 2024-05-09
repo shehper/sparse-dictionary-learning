@@ -13,7 +13,7 @@ from hooked_model import HookedGPT
 
 class ResourceLoader:
     """
-    Manages resources for training, evaluation, or preparation.
+    Manages resources for training, evaluation, and preparation.
     This includes loading datasets, model weights, and handling batches of data.
     """
 
@@ -48,6 +48,10 @@ class ResourceLoader:
     def load_text_data(self):
         """Loads the text data from the specified dataset."""
         text_data_path = os.path.join(self.base_dir, 'transformer', 'data', self.dataset, 'train.bin')
+        if not os.path.exists(text_data_path):
+            # if train.bin is too large to be loaded to RAM (e.g. on your laptop), can experiment with val.bin.
+            print(f"train.bin not found; attempting to find val.bin")
+            text_data_path = os.path.join(self.base_dir, 'transformer', 'data', self.dataset, 'val.bin')
         return np.memmap(text_data_path, dtype=np.uint16, mode='r')
 
     def load_transformer_model(self):
