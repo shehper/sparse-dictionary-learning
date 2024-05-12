@@ -24,4 +24,4 @@ slurm/
 wandb/
 notes+papers
 notes_exp.md
-autoencoder/out/
+autoencoder/out/env_3.12/
